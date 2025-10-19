@@ -1,484 +1,478 @@
-const EXT_NAME = 'personas';
-const VERSION = '1.3.2';
-const DEBUG = true;
+(() => {
+    'use strict';
 
-const SELECTORS = {
-    personaManagement: '#persona-management-block',
-    headerRow: '#persona-management-block .persona_management_left_column .flex-container.marginBot10.alignitemscenter',
-    avatarBlock: '#user_avatar_block',
-    avatarCard: '.avatar-container',
-    nameBlock: '.character_name_block',
-    nameSpan: '.ch_name',
-    altHeaderSelectors: [
-        '#persona-management-block .flex-container',
-        '.persona_management_left_column .flex-container:first-child',
-        '#persona_search_bar',
-        '#create_dummy_persona'
-    ]
-};
+    const EXT_NAME = 'personas';
+    const VERSION = '1.3.1';
+    const DEBUG = true;
 
-const IDS = {
-    filterWrapper: 'pgm-filter-wrapper',
-    filterSelect: 'pgm-filter-select',
-    tagsToggle: 'pgm-tags-toggle',
-    popover: 'pgm-popover',
-    backdrop: 'pgm-backdrop'
-};
-
-const CLASSES = {
-    groupBtn: 'pgm-group-btn',
-    active: 'pgm-active'
-};
-
-let settings = {
-    selectedGroup: '',
-    personaGroups: {},
-    showTags: false
-};
-
-let observers = {
-    body: null,
-    avatars: null
-};
-
-let isUpdating = false;
-let initRetryCount = 0;
-const MAX_INIT_RETRIES = 20;
-
-async function init() {
-    log('Initializing extension v' + VERSION + '...');
-    await loadSettings();
-    setupObservers();
-    const initUI = () => {
-        initRetryCount++;
-        log('UI init attempt ' + initRetryCount + '/' + MAX_INIT_RETRIES);
-
-        if (createUI()) {
-            log('UI created successfully');
-            return;
-        }
-
-        if (initRetryCount < MAX_INIT_RETRIES) {
-            setTimeout(initUI, 200);
-        } else {
-            warn('Failed to initialize UI after', MAX_INIT_RETRIES, 'attempts');
-        }
+    const SELECTORS = {
+        personaManagement: '#persona-management-block',
+        headerRow: '#persona-management-block .persona_management_left_column .flex-container.marginBot10.alignitemscenter',
+        avatarBlock: '#user_avatar_block',
+        avatarCard: '.avatar-container',
+        nameBlock: '.character_name_block',
+        nameSpan: '.ch_name',
+        altHeaderSelectors: [
+            '#persona-management-block .flex-container:has(#persona_search_bar)',
+            '#persona-management-block .flex-container:has(#create_dummy_persona)',
+            '.persona_management_left_column .flex-container:first-child',
+            '#persona_search_bar',
+            '#create_dummy_persona'
+        ]
     };
 
-    initUI();
-    setTimeout(initUI, 100);
-    setTimeout(initUI, 500);
-    setTimeout(initUI, 1000);
-    setTimeout(initUI, 2000);
+    const IDS = {
+        filterWrapper: 'pgm-filter-wrapper',
+        filterSelect: 'pgm-filter-select',
+        tagsToggle: 'pgm-tags-toggle',
+        popover: 'pgm-popover',
+        backdrop: 'pgm-backdrop'
+    };
 
-    log('Extension initialization started');
-}
+    const CLASSES = {
+        groupBtn: 'pgm-group-btn',
+        active: 'pgm-active'
+    };
 
-function unload() {
-    log('Unloading extension...');
-    if (observers.body) observers.body.disconnect();
-    if (observers.avatars) observers.avatars.disconnect();
-    closePopover();
-    cleanupUI();
-}
+    let settings = {
+        selectedGroup: '',
+        personaGroups: {},
+        showTags: false
+    };
 
-async function loadSettings() {
-    if (!window.extension_settings) window.extension_settings = {};
+    let observers = {
+        body: null,
+        avatars: null
+    };
 
-    let extensionSettings = {};
-    if (extension_settings[EXT_NAME]) {
-        extensionSettings = Object.assign({}, extension_settings[EXT_NAME]);
-    }
+    let isUpdating = false;
+    let initRetryCount = 0;
+    const MAX_INIT_RETRIES = 20;
 
-    let localStorageSettings = {};
-    try {
-        const backup = localStorage.getItem(EXT_NAME + '-backup');
-        if (backup) {
-            const data = JSON.parse(backup);
-            if (data.personaGroups) {
-                localStorageSettings = {
-                    selectedGroup: data.selectedGroup || '',
-                    personaGroups: data.personaGroups || {},
-                    showTags: data.showTags || false
-                };
+    async function init() {
+        log('Initializing extension v' + VERSION + '...');
+        await loadSettings();
+        setupObservers();
+        const initUI = () => {
+            initRetryCount++;
+            log(`UI init attempt ${initRetryCount}/${MAX_INIT_RETRIES}`);
+
+            if (createUI()) {
+                log('UI created successfully');
+                return;
             }
-        }
-    } catch (e) {
-        warn('Failed to restore from localStorage:', e);
-    }
 
-    if (Object.keys(extensionSettings.personaGroups || {}).length > 0) {
-        log('Using settings from extension_settings');
-        settings = Object.assign(settings, extensionSettings);
-    } else if (Object.keys(localStorageSettings.personaGroups || {}).length > 0) {
-        log('Using settings from localStorage backup');
-        settings = Object.assign(settings, localStorageSettings);
-    } else {
-        log('No existing settings found, using defaults');
-    }
-
-    await saveSettings();
-}
-
-async function saveSettings() {
-    if (!window.extension_settings) return;
-
-    extension_settings[EXT_NAME] = Object.assign({}, settings);
-    try {
-        if (typeof saveSettingsDebounced === 'function') {
-            saveSettingsDebounced();
-        }
-    } catch (e) {
-        warn('ST save failed:', e);
-    }
-
-    try {
-        localStorage.setItem(EXT_NAME + '-backup', JSON.stringify({
-            version: VERSION,
-            timestamp: Date.now(),
-            selectedGroup: settings.selectedGroup,
-            personaGroups: settings.personaGroups,
-            showTags: settings.showTags
-        }));
-    } catch (e) {
-        warn('Backup save failed:', e);
-    }
-
-    log('Settings saved to storages');
-}
-
-async function exportGroups() {
-    try {
-        const data = {
-            version: VERSION,
-            timestamp: Date.now(),
-            selectedGroup: settings.selectedGroup,
-            personaGroups: settings.personaGroups,
-            showTags: settings.showTags
+            if (initRetryCount < MAX_INIT_RETRIES) {
+                setTimeout(initUI, 200);
+            } else {
+                warn('Failed to initialize UI after', MAX_INIT_RETRIES, 'attempts');
+            }
         };
 
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
+        initUI();
+        setTimeout(initUI, 100);
+        setTimeout(initUI, 500);
+        setTimeout(initUI, 1000);
+        setTimeout(initUI, 2000);
 
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'personas-' + new Date().toISOString().split('T')[0] + '.json';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        log('Groups exported successfully');
-        return true;
-    } catch (e) {
-        warn('Export failed:', e);
-        return false;
+        log('Extension initialization started');
     }
-}
 
-async function importGroups(file) {
-    try {
-        const text = await file.text();
-        const data = JSON.parse(text);
+    function unload() {
+        log('Unloading extension...');
+        observers.body?.disconnect();
+        observers.avatars?.disconnect();
+        closePopover();
+        cleanupUI();
+    }
 
-        if (data.personaGroups) {
-            const oldCount = Object.keys(settings.personaGroups).length;
+    async function loadSettings() {
+        if (!window.extension_settings) window.extension_settings = {};
 
-            settings.selectedGroup = data.selectedGroup || '';
-            settings.personaGroups = Object.assign({}, settings.personaGroups, data.personaGroups);
-            settings.showTags = data.showTags !== undefined ? data.showTags : settings.showTags;
-
-            await saveSettings();
-            updateFilterOptions();
-            updateAvatarCards();
-            applyFilter();
-
-            const newCount = Object.keys(settings.personaGroups).length;
-            log('Groups imported successfully. Personas: ' + oldCount + ' -> ' + newCount);
-
-            alert('Import successful!\nPersonas before: ' + oldCount + '\nPersonas after: ' + newCount);
-            return true;
-        } else {
-            throw new Error('Invalid file format');
+        let extensionSettings = {};
+        if (extension_settings[EXT_NAME]) {
+            extensionSettings = { ...extension_settings[EXT_NAME] };
         }
-    } catch (e) {
-        warn('Import failed:', e);
-        alert('Import failed: ' + e.message);
-        return false;
+
+        let localStorageSettings = {};
+        try {
+            const backup = localStorage.getItem(`${EXT_NAME}-backup`);
+            if (backup) {
+                const data = JSON.parse(backup);
+                if (data.personaGroups) {
+                    localStorageSettings = {
+                        selectedGroup: data.selectedGroup || '',
+                        personaGroups: data.personaGroups || {},
+                        showTags: data.showTags || false
+                    };
+                }
+            }
+        } catch (e) {
+            warn('Failed to restore from localStorage:', e);
+        }
+
+        if (Object.keys(extensionSettings.personaGroups || {}).length > 0) {
+            log('Using settings from extension_settings');
+            settings = { ...settings, ...extensionSettings };
+        } else if (Object.keys(localStorageSettings.personaGroups || {}).length > 0) {
+            log('Using settings from localStorage backup');
+            settings = { ...settings, ...localStorageSettings };
+        } else {
+            log('No existing settings found, using defaults');
+        }
+
+        await saveSettings();
     }
-}
 
-function setupObservers() {
-    observers.body = new MutationObserver(debounce(() => {
-        if (isUpdating) return;
+    async function saveSettings() {
+        if (!window.extension_settings) return;
 
-        log('DOM changed, updating UI...');
-        createUI();
-    }, 150));
+        extension_settings[EXT_NAME] = { ...settings };
+        try {
+            if (typeof saveSettingsDebounced === 'function') {
+                saveSettingsDebounced();
+            }
+        } catch (e) {
+            warn('ST save failed:', e);
+        }
 
-    observers.body.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['class']
-    });
+        try {
+            localStorage.setItem(`${EXT_NAME}-backup`, JSON.stringify({
+                version: VERSION,
+                timestamp: Date.now(),
+                ...settings
+            }));
+        } catch (e) {
+            warn('Backup save failed:', e);
+        }
 
-    const setupAvatarObserver = () => {
-        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
-        if (!avatarBlock) return;
-        if (observers.avatars && observers.avatars.target === avatarBlock) return;
-        if (observers.avatars) observers.avatars.disconnect();
-        observers.avatars = new MutationObserver(debounce(() => {
+        log('Settings saved to storages');
+    }
+
+    async function exportGroups() {
+        try {
+            const data = {
+                version: VERSION,
+                timestamp: Date.now(),
+                selectedGroup: settings.selectedGroup,
+                personaGroups: settings.personaGroups,
+                showTags: settings.showTags
+            };
+
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `personas-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            log('Groups exported successfully');
+            return true;
+        } catch (e) {
+            warn('Export failed:', e);
+            return false;
+        }
+    }
+
+    async function importGroups(file) {
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+
+            if (data.personaGroups) {
+                const oldCount = Object.keys(settings.personaGroups).length;
+
+                settings.selectedGroup = data.selectedGroup || '';
+                settings.personaGroups = { ...settings.personaGroups, ...data.personaGroups };
+                settings.showTags = data.showTags !== undefined ? data.showTags : settings.showTags;
+
+                await saveSettings();
+                updateFilterOptions();
+                updateAvatarCards();
+                applyFilter();
+
+                const newCount = Object.keys(settings.personaGroups).length;
+                log(`Groups imported successfully. Personas: ${oldCount} -> ${newCount}`);
+
+                alert(`Import successful!\nPersonas before: ${oldCount}\nPersonas after: ${newCount}`);
+                return true;
+            } else {
+                throw new Error('Invalid file format');
+            }
+        } catch (e) {
+            warn('Import failed:', e);
+            alert('Import failed: ' + e.message);
+            return false;
+        }
+    }
+
+    function setupObservers() {
+        observers.body = new MutationObserver(debounce(() => {
             if (isUpdating) return;
-            log('Avatar list changed, updating cards...');
-            updateAvatarCards();
-        }, 100));
 
-        observers.avatars.target = avatarBlock;
-        observers.avatars.observe(avatarBlock, {
+            log('DOM changed, updating UI...');
+            createUI();
+        }, 150));
+
+        observers.body.observe(document.body, {
             childList: true,
-            subtree: true
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class']
         });
 
-        log('Avatar observer setup for:', avatarBlock);
-    };
+        const setupAvatarObserver = () => {
+            const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
+            if (!avatarBlock) return;
+            if (observers.avatars?.target === avatarBlock) return;
+            observers.avatars?.disconnect();
+            observers.avatars = new MutationObserver(debounce(() => {
+                if (isUpdating) return;
+                log('Avatar list changed, updating cards...');
+                updateAvatarCards();
+            }, 100));
 
-    setupAvatarObserver();
+            observers.avatars.target = avatarBlock;
+            observers.avatars.observe(avatarBlock, {
+                childList: true,
+                subtree: true
+            });
 
-    setInterval(() => {
+            log('Avatar observer setup for:', avatarBlock);
+        };
+
         setupAvatarObserver();
-        if (isPersonaManagerVisible() && !document.getElementById(IDS.filterWrapper)) {
-            log('Periodic check: recreating UI');
-            createUI();
-        }
-    }, 3000);
-}
 
-function createUI() {
-    if (!isPersonaManagerVisible()) {
-        log('Persona manager not visible, skipping UI creation');
-        return false;
-    }
-
-    log('Creating UI...');
-
-    const filterCreated = createFilterUI();
-    const toggleCreated = createTagsToggle();
-    const toolsCreated = createToolsButtons();
-
-    if (filterCreated || toggleCreated || toolsCreated) {
-        updateAvatarCards();
-        log('UI creation successful');
-        return true;
-    }
-
-    log('UI creation failed');
-    return false;
-}
-
-function createToolsButtons() {
-    const header = getHeaderRow();
-    if (!header) return false;
-
-    if (header.querySelector('.pgm-tools')) return true;
-
-    const toolsContainer = createElement('div', {
-        className: 'pgm-tools'
-    });
-
-    const exportBtn = createElement('button', {
-        type: 'button',
-        className: 'pgm-export-btn menu_button',
-        innerHTML: '<i class="fa-solid fa-download"></i>',
-        title: 'Export groups'
-    });
-
-    const importBtn = createElement('button', {
-        type: 'button',
-        className: 'pgm-import-btn menu_button',
-        innerHTML: '<i class="fa-solid fa-upload"></i>',
-        title: 'Import groups'
-    });
-
-    const fileInput = createElement('input', {
-        type: 'file',
-        accept: '.json',
-        style: 'display: none'
-    });
-
-    exportBtn.addEventListener('click', exportGroups);
-
-    importBtn.addEventListener('click', () => {
-        fileInput.click();
-    });
-
-    fileInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            importGroups(file);
-        }
-        fileInput.value = '';
-    });
-
-    toolsContainer.appendChild(exportBtn);
-    toolsContainer.appendChild(importBtn);
-    toolsContainer.appendChild(fileInput);
-    header.appendChild(toolsContainer);
-
-    log('Tools buttons created successfully');
-    return true;
-}
-
-function createFilterUI() {
-    if (document.getElementById(IDS.filterWrapper)) {
-        updateFilterOptions();
-        return true;
-    }
-    const header = getHeaderRow();
-    if (!header) {
-        log('Header not found for filter UI');
-        return false;
-    }
-
-    log('Creating filter UI in:', header);
-
-    const wrapper = createElement('div', {
-        id: IDS.filterWrapper,
-        className: 'pgm-filter'
-    });
-
-    const label = createElement('label', {
-        textContent: 'Group:',
-        className: 'pgm-filter-label'
-    });
-
-    const select = createElement('select', {
-        id: IDS.filterSelect,
-        className: 'pgm-filter-select menu_select'
-    });
-
-    const resetBtn = createElement('button', {
-        type: 'button',
-        textContent: 'Reset',
-        className: 'pgm-filter-btn menu_button'
-    });
-
-    select.addEventListener('change', () => {
-        settings.selectedGroup = select.value;
-        saveSettings();
-        applyFilter();
-    });
-
-    resetBtn.addEventListener('click', () => {
-        settings.selectedGroup = '';
-        select.value = '';
-        saveSettings();
-        applyFilter();
-    });
-
-    wrapper.appendChild(label);
-    wrapper.appendChild(select);
-    wrapper.appendChild(resetBtn);
-    header.appendChild(wrapper);
-
-    updateFilterOptions();
-    log('Filter UI created successfully');
-    return true;
-}
-
-function createTagsToggle() {
-    if (document.getElementById(IDS.tagsToggle)) {
-        updateTagsToggleButton();
-        return true;
-    }
-
-    const header = getHeaderRow();
-    if (!header) {
-        log('Header not found for tags toggle');
-        return false;
-    }
-
-    log('Creating tags toggle in:', header);
-
-    const btn = createElement('button', {
-        id: IDS.tagsToggle,
-        type: 'button',
-        className: 'pgm-tags-toggle menu_button',
-        innerHTML: '<i class="fa-solid fa-tags"></i>',
-        title: 'Toggle group management'
-    });
-
-    btn.addEventListener('click', () => {
-        settings.showTags = !settings.showTags;
-        saveSettings();
-        updateTagsToggleButton();
-        updateAvatarCards();
-        log('Tags toggle clicked, new state:', settings.showTags);
-    });
-
-    header.appendChild(btn);
-    updateTagsToggleButton();
-    log('Tags toggle created successfully');
-    return true;
-}
-
-function updateTagsToggleButton() {
-    const btn = document.getElementById(IDS.tagsToggle);
-    if (!btn) return;
-
-    btn.classList.toggle(CLASSES.active, settings.showTags);
-    btn.title = settings.showTags ? 'Hide group management' : 'Show group management';
-}
-
-function updateAvatarCards() {
-    if (isUpdating) return;
-    isUpdating = true;
-
-    try {
-        log('Updating avatar cards...');
-
-        if (!settings.showTags) {
-            const groupBtns = document.querySelectorAll('.' + CLASSES.groupBtn);
-            for (let i = 0; i < groupBtns.length; i++) {
-                groupBtns[i].style.display = 'none';
+        setInterval(() => {
+            setupAvatarObserver();
+            if (isPersonaManagerVisible() && !document.getElementById(IDS.filterWrapper)) {
+                log('Periodic check: recreating UI');
+                createUI();
             }
-            return;
+        }, 3000);
+    }
+
+    function createUI() {
+        if (!isPersonaManagerVisible()) {
+            log('Persona manager not visible, skipping UI creation');
+            return false;
         }
 
-        const avatarCards = getAvatarCards();
-        log('Found', avatarCards.length, 'avatar cards');
+        log('Creating UI...');
 
-        for (let i = 0; i < avatarCards.length; i++) {
-            const card = avatarCards[i];
-            const avatarId = card.dataset.avatarId;
-            if (!avatarId) continue;
+        const filterCreated = createFilterUI();
+        const toggleCreated = createTagsToggle();
+        const toolsCreated = createToolsButtons();
 
-            const nameBlock = card.querySelector(SELECTORS.nameBlock);
-            if (!nameBlock) continue;
+        if (filterCreated || toggleCreated || toolsCreated) {
+            updateAvatarCards();
+            log('UI creation successful');
+            return true;
+        }
 
-            let groupBtn = nameBlock.querySelector('.' + CLASSES.groupBtn);
-            if (!groupBtn) {
-                groupBtn = createElement('button', {
-                    type: 'button',
-                    className: CLASSES.groupBtn + ' menu_button',
-                    innerHTML: '<i class="fa-solid fa-tags"></i>',
-                    title: 'Manage groups'
+        log('UI creation failed');
+        return false;
+    }
+
+    function createToolsButtons() {
+        const header = getHeaderRow();
+        if (!header) return false;
+
+        if (header.querySelector('.pgm-tools')) return true;
+
+        const toolsContainer = createElement('div', {
+            className: 'pgm-tools'
+        });
+
+        const exportBtn = createElement('button', {
+            type: 'button',
+            className: 'pgm-export-btn menu_button',
+            innerHTML: '<i class="fa-solid fa-download"></i>',
+            title: 'Export groups'
+        });
+
+        const importBtn = createElement('button', {
+            type: 'button',
+            className: 'pgm-import-btn menu_button',
+            innerHTML: '<i class="fa-solid fa-upload"></i>',
+            title: 'Import groups'
+        });
+
+        const fileInput = createElement('input', {
+            type: 'file',
+            accept: '.json',
+            style: 'display: none'
+        });
+
+        exportBtn.addEventListener('click', exportGroups);
+
+        importBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                importGroups(file);
+            }
+            fileInput.value = '';
+        });
+
+        toolsContainer.append(exportBtn, importBtn, fileInput);
+        header.appendChild(toolsContainer);
+
+        log('Tools buttons created successfully');
+        return true;
+    }
+
+    function createFilterUI() {
+        if (document.getElementById(IDS.filterWrapper)) {
+            updateFilterOptions();
+            return true;
+        }
+	const header = getHeaderRow();
+        if (!header) {
+            log('Header not found for filter UI');
+            return false;
+        }
+
+        log('Creating filter UI in:', header);
+
+        const wrapper = createElement('div', {
+            id: IDS.filterWrapper,
+            className: 'pgm-filter'
+        });
+
+        const label = createElement('label', {
+            textContent: 'Group:',
+            className: 'pgm-filter-label'
+        });
+
+        const select = createElement('select', {
+            id: IDS.filterSelect,
+            className: 'pgm-filter-select menu_select'
+        });
+
+        const resetBtn = createElement('button', {
+            type: 'button',
+            textContent: 'Reset',
+            className: 'pgm-filter-btn menu_button'
+        });
+
+        select.addEventListener('change', () => {
+            settings.selectedGroup = select.value;
+            saveSettings();
+            applyFilter();
+        });
+
+        resetBtn.addEventListener('click', () => {
+            settings.selectedGroup = '';
+            select.value = '';
+            saveSettings();
+            applyFilter();
+        });
+
+        wrapper.append(label, select, resetBtn);
+        header.appendChild(wrapper);
+
+        updateFilterOptions();
+        log('Filter UI created successfully');
+        return true;
+    }
+
+    function createTagsToggle() {
+        if (document.getElementById(IDS.tagsToggle)) {
+            updateTagsToggleButton();
+            return true;
+        }
+
+        const header = getHeaderRow();
+        if (!header) {
+            log('Header not found for tags toggle');
+            return false;
+        }
+
+        log('Creating tags toggle in:', header);
+
+        const btn = createElement('button', {
+            id: IDS.tagsToggle,
+            type: 'button',
+            className: 'pgm-tags-toggle menu_button',
+            innerHTML: '<i class="fa-solid fa-tags"></i>',
+            title: 'Toggle group management'
+        });
+
+        btn.addEventListener('click', () => {
+            settings.showTags = !settings.showTags;
+            saveSettings();
+            updateTagsToggleButton();
+            updateAvatarCards();
+            log('Tags toggle clicked, new state:', settings.showTags);
+        });
+
+        header.appendChild(btn);
+        updateTagsToggleButton();
+        log('Tags toggle created successfully');
+        return true;
+    }
+
+    function updateTagsToggleButton() {
+        const btn = document.getElementById(IDS.tagsToggle);
+        if (!btn) return;
+
+        btn.classList.toggle(CLASSES.active, settings.showTags);
+        btn.title = settings.showTags ? 'Hide group management' : 'Show group management';
+    }
+
+    function updateAvatarCards() {
+        if (isUpdating) return;
+        isUpdating = true;
+
+        try {
+            log('Updating avatar cards...');
+
+            if (!settings.showTags) {
+                document.querySelectorAll(`.${CLASSES.groupBtn}`).forEach(btn => {
+                    btn.style.display = 'none';
                 });
+                return;
+            }
 
-                groupBtn.addEventListener('click', (function(id) {
-                    return function(e) {
+            const avatarCards = getAvatarCards();
+            log('Found', avatarCards.length, 'avatar cards');
+
+            avatarCards.forEach(card => {
+                const avatarId = card.dataset.avatarId;
+                if (!avatarId) return;
+
+                const nameBlock = card.querySelector(SELECTORS.nameBlock);
+                if (!nameBlock) return;
+
+                let groupBtn = nameBlock.querySelector(`.${CLASSES.groupBtn}`);
+                if (!groupBtn) {
+                    groupBtn = createElement('button', {
+                        type: 'button',
+                        className: `${CLASSES.groupBtn} menu_button`,
+                        innerHTML: '<i class="fa-solid fa-tags"></i>',
+                        title: 'Manage groups'
+                    });
+
+                    groupBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         e.preventDefault();
-                        log('Opening group manager for:', id);
-                        openGroupManager(e.target, id);
-                    };
-                })(avatarId));
+                        log('Opening group manager for:', avatarId);
+                        openGroupManager(e.target, avatarId);
+                    });
 
-                groupBtn.addEventListener('mousedown', (e) => {
-                    e.stopPropagation();
-                });
+                    groupBtn.addEventListener('mousedown', (e) => {
+                        e.stopPropagation();
+                    });
 
-                const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
+                    const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
                     if (nameSpan && nameSpan.parentNode === nameBlock) {
                         nameSpan.insertAdjacentElement('afterend', groupBtn);
                     } else {
@@ -487,7 +481,7 @@ function updateAvatarCards() {
                 }
 
                 groupBtn.style.display = 'inline-block';
-            }
+            });
 
             log('Avatar cards updated successfully');
         } finally {
@@ -551,11 +545,8 @@ function updateAvatarCards() {
                 return;
             }
 
-            for (let i = 0; i < allGroups.length; i++) {
-                const group = allGroups[i];
-                const name = group.name;
-                const count = group.count;
-                const isChecked = personaGroups.indexOf(name) !== -1;
+            allGroups.forEach(({ name, count }) => {
+                const isChecked = personaGroups.includes(name);
 
                 const row = createElement('label', {
                     className: 'pgm-group-row'
@@ -573,26 +564,22 @@ function updateAvatarCards() {
 
                 const countSpan = createElement('span', {
                     className: 'pgm-group-count',
-                    textContent: '(' + count + ')'
+                    textContent: `(${count})`
                 });
 
-                checkbox.addEventListener('change', (function(groupName) {
-                    return function() {
-                        if (checkbox.checked) {
-                            addPersonaToGroup(avatarId, groupName);
-                        } else {
-                            removePersonaFromGroup(avatarId, groupName);
-                        }
-                        setTimeout(renderGroupsList, 50);
-                        log('Group', groupName, checkbox.checked ? 'added to' : 'removed from', avatarId);
-                    };
-                })(name));
+                checkbox.addEventListener('change', () => {
+                    if (checkbox.checked) {
+                        addPersonaToGroup(avatarId, name);
+                    } else {
+                        removePersonaFromGroup(avatarId, name);
+                    }
+                    setTimeout(renderGroupsList, 50);
+                    log('Group', name, checkbox.checked ? 'added to' : 'removed from', avatarId);
+                });
 
-                row.appendChild(checkbox);
-                row.appendChild(nameSpan);
-                row.appendChild(countSpan);
+                row.append(checkbox, nameSpan, countSpan);
                 groupsList.appendChild(row);
-            }
+            });
         }
 
         function handleEscapeKey(e) {
@@ -634,15 +621,10 @@ function updateAvatarCards() {
         popover.addEventListener('mousedown', preventBubbling);
         popover.addEventListener('mouseup', preventBubbling);
 
-        addSection.appendChild(addInput);
-        addSection.appendChild(addBtn);
-        popover.appendChild(title);
-        popover.appendChild(groupsList);
-        popover.appendChild(addSection);
-        popover.appendChild(closeBtn);
+        addSection.append(addInput, addBtn);
+        popover.append(title, groupsList, addSection, closeBtn);
 
-        document.body.appendChild(backdrop);
-        document.body.appendChild(popover);
+        document.body.append(backdrop, popover);
 
         positionPopover(popover, anchor);
 
@@ -662,7 +644,7 @@ function updateAvatarCards() {
         const popover = document.getElementById(IDS.popover);
         const backdrop = document.getElementById(IDS.backdrop);
 
-        if (popover && popover._cleanup) {
+        if (popover?._cleanup) {
             try {
                 popover._cleanup();
                 log('Popover cleanup completed');
@@ -671,8 +653,8 @@ function updateAvatarCards() {
             }
         }
 
-        if (backdrop) backdrop.remove();
-        if (popover) popover.remove();
+        backdrop?.remove();
+        popover?.remove();
         log('Popover closed');
     }
 
@@ -683,10 +665,10 @@ function updateAvatarCards() {
             const width = Math.min(300, window.innerWidth - 20);
             const height = Math.min(400, window.innerHeight - 40);
 
-            popover.style.width = width + 'px';
-            popover.style.maxHeight = height + 'px';
-            popover.style.left = ((window.innerWidth - width) / 2) + 'px';
-            popover.style.top = ((window.innerHeight - height) / 2) + 'px';
+            popover.style.width = `${width}px`;
+            popover.style.maxHeight = `${height}px`;
+            popover.style.left = `${(window.innerWidth - width) / 2}px`;
+            popover.style.top = `${(window.innerHeight - height) / 2}px`;
             return;
         }
 
@@ -701,8 +683,8 @@ function updateAvatarCards() {
             top = rect.top - 408;
         }
 
-        popover.style.left = Math.max(10, left) + 'px';
-        popover.style.top = Math.max(10, top) + 'px';
+        popover.style.left = `${Math.max(10, left)}px`;
+        popover.style.top = `${Math.max(10, top)}px`;
     }
 
     async function addPersonaToGroup(avatarId, groupName) {
@@ -711,7 +693,7 @@ function updateAvatarCards() {
         }
 
         const groups = settings.personaGroups[avatarId];
-        if (groups.indexOf(groupName) === -1) {
+        if (!groups.includes(groupName)) {
             groups.push(groupName);
             await saveSettings();
             updateFilterOptions();
@@ -737,26 +719,15 @@ function updateAvatarCards() {
     function getAllGroups() {
         const groupCounts = {};
 
-        const personaGroupsValues = Object.keys(settings.personaGroups);
-        for (let i = 0; i < personaGroupsValues.length; i++) {
-            const groups = settings.personaGroups[personaGroupsValues[i]];
-            for (let j = 0; j < groups.length; j++) {
-                const group = groups[j];
+        Object.values(settings.personaGroups).forEach(groups => {
+            groups.forEach(group => {
                 groupCounts[group] = (groupCounts[group] || 0) + 1;
-            }
-        }
-
-        const result = [];
-        const groupNames = Object.keys(groupCounts);
-        for (let i = 0; i < groupNames.length; i++) {
-            result.push({
-                name: groupNames[i],
-                count: groupCounts[groupNames[i]]
             });
-        }
+        });
 
-        result.sort((a, b) => a.name.localeCompare(b.name));
-        return result;
+        return Object.entries(groupCounts)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => a.name.localeCompare(b.name));
     }
 
     function updateFilterOptions() {
@@ -773,43 +744,25 @@ function updateAvatarCards() {
         });
         select.appendChild(allOption);
 
-        for (let i = 0; i < groups.length; i++) {
-            const group = groups[i];
+        groups.forEach(({ name, count }) => {
             const option = createElement('option', {
-                value: group.name,
-                textContent: group.name + ' (' + group.count + ')'
+                value: name,
+                textContent: `${name} (${count})`
             });
             select.appendChild(option);
-        }
+        });
 
-        let groupExists = false;
-        for (let i = 0; i < groups.length; i++) {
-            if (groups[i].name === settings.selectedGroup) {
-                groupExists = true;
-                break;
-            }
-        }
-
-        if (settings.selectedGroup && groupExists) {
+        if (settings.selectedGroup && groups.some(g => g.name === settings.selectedGroup)) {
             select.value = settings.selectedGroup;
+        } else if (currentValue && groups.some(g => g.name === currentValue)) {
+            select.value = currentValue;
         } else {
-            let currentExists = false;
-            for (let i = 0; i < groups.length; i++) {
-                if (groups[i].name === currentValue) {
-                    currentExists = true;
-                    break;
-                }
-            }
-            if (currentValue && currentExists) {
-                select.value = currentValue;
-            } else {
-                select.value = '';
-                settings.selectedGroup = '';
-            }
+            select.value = '';
+            settings.selectedGroup = '';
         }
 
         if (currentWidth > 0) {
-            select.style.minWidth = Math.max(currentWidth, 120) + 'px';
+            select.style.minWidth = `${Math.max(currentWidth, 120)}px`;
         }
 
         log('Filter options updated, groups:', groups.length);
@@ -821,16 +774,15 @@ function updateAvatarCards() {
 
         log('Applying filter:', selectedGroup || 'All', 'to', avatarCards.length, 'cards');
 
-        for (let i = 0; i < avatarCards.length; i++) {
-            const card = avatarCards[i];
+        avatarCards.forEach(card => {
             const avatarId = card.dataset.avatarId;
-            if (!avatarId) continue;
+            if (!avatarId) return;
 
             const personaGroups = settings.personaGroups[avatarId] || [];
-            const shouldShow = !selectedGroup || personaGroups.indexOf(selectedGroup) !== -1;
+            const shouldShow = !selectedGroup || personaGroups.includes(selectedGroup);
 
             card.style.display = shouldShow ? '' : 'none';
-        }
+        });
     }
 
     function isPersonaManagerVisible() {
@@ -846,9 +798,7 @@ function updateAvatarCards() {
     function getHeaderRow() {
         let header = document.querySelector(SELECTORS.headerRow);
         if (header) return header;
-
-        for (let i = 0; i < SELECTORS.altHeaderSelectors.length; i++) {
-            const selector = SELECTORS.altHeaderSelectors[i];
+        for (const selector of SELECTORS.altHeaderSelectors) {
             try {
                 const element = document.querySelector(selector);
                 if (element) {
@@ -859,10 +809,8 @@ function updateAvatarCards() {
                     }
                 }
             } catch (e) {
-                // ignore
             }
         }
-
         const leftColumn = document.querySelector('.persona_management_left_column');
         if (leftColumn) {
             header = leftColumn.querySelector('.flex-container');
@@ -881,24 +829,18 @@ function updateAvatarCards() {
         return avatarBlock ? Array.from(avatarBlock.querySelectorAll(SELECTORS.avatarCard)) : [];
     }
 
-    function createElement(tag, props) {
-        if (!props) props = {};
+    function createElement(tag, props = {}) {
         const element = document.createElement(tag);
-        const keys = Object.keys(props);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
-            element[key] = props[key];
-        }
+        Object.assign(element, props);
         return element;
     }
 
     function debounce(func, wait) {
         let timeout;
-        return function executedFunction() {
-            const args = Array.prototype.slice.call(arguments);
+        return function executedFunction(...args) {
             const later = () => {
                 clearTimeout(timeout);
-                func.apply(this, args);
+                func(...args);
             };
             clearTimeout(timeout);
             timeout = setTimeout(later, wait);
@@ -906,34 +848,19 @@ function updateAvatarCards() {
     }
 
     function cleanupUI() {
-        const filterWrapper = document.getElementById(IDS.filterWrapper);
-        if (filterWrapper) filterWrapper.remove();
-
-        const tagsToggle = document.getElementById(IDS.tagsToggle);
-        if (tagsToggle) tagsToggle.remove();
-
-        const tools = document.querySelector('.pgm-tools');
-        if (tools) tools.remove();
-
-        const groupBtns = document.querySelectorAll('.' + CLASSES.groupBtn);
-        for (let i = 0; i < groupBtns.length; i++) {
-            groupBtns[i].remove();
-        }
+        document.getElementById(IDS.filterWrapper)?.remove();
+        document.getElementById(IDS.tagsToggle)?.remove();
+        document.querySelector('.pgm-tools')?.remove();
+        document.querySelectorAll(`.${CLASSES.groupBtn}`).forEach(btn => btn.remove());
         log('UI cleaned up');
     }
 
-    function log() {
-        if (DEBUG) {
-            const args = Array.prototype.slice.call(arguments);
-            args.unshift('[' + EXT_NAME + ']');
-            console.log.apply(console, args);
-        }
+    function log(...args) {
+        if (DEBUG) console.log(`[${EXT_NAME}]`, ...args);
     }
 
-    function warn() {
-        const args = Array.prototype.slice.call(arguments);
-        args.unshift('[' + EXT_NAME + ']');
-        console.warn.apply(console, args);
+    function warn(...args) {
+        console.warn(`[${EXT_NAME}]`, ...args);
     }
 
     window.pgmSync = async function() {
@@ -946,7 +873,7 @@ function updateAvatarCards() {
             headerFound: !!getHeaderRow(),
             avatarCards: getAvatarCards().length
         };
-        console.log('[' + EXT_NAME + '] Sync completed:', info);
+        console.log(`[${EXT_NAME}] Sync completed:`, info);
         return info;
     };
 
@@ -954,7 +881,7 @@ function updateAvatarCards() {
         if (confirm('Delete ALL persona groups data?')) {
             settings.personaGroups = {};
             settings.selectedGroup = '';
-            localStorage.removeItem(EXT_NAME + '-backup');
+            localStorage.removeItem(`${EXT_NAME}-backup`);
             await saveSettings();
             createUI();
             log('All data cleared');
