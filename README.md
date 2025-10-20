@@ -9,7 +9,7 @@ A powerful extension for SillyTavern that allows you to organize your personas w
 - 🏷️ Group Management: Organize personas into custom groups
 - 📱 Mobile Friendly: Responsive design for all devices(I hope so...)
 - 🎨 Theme Integration: Seamlessly integrates with SillyTavern themes
-- 💾 Backup feature and Local Storage saves.
+- 💾 Backup feature and support of SillyTavern persistent settings.
 
 ## Installation
 Use ST's inbuilt extension installer.
