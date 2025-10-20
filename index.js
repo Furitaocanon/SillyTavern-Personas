@@ -2,8 +2,8 @@
     'use strict';
 
     const EXT_NAME = 'personas';
-    const VERSION = '1.3.3';
-    const DEBUG = true;
+    const VERSION = '2.2.0';
+    const DEBUG = false;
 
     const SELECTORS = {
         personaManagement: '#persona-management-block',
@@ -11,255 +11,154 @@
         avatarBlock: '#user_avatar_block',
         avatarCard: '.avatar-container',
         nameBlock: '.character_name_block',
-        nameSpan: '.ch_name',
-        altHeaderSelectors: [
-            '#persona-management-block .flex-container:has(#persona_search_bar)',
-            '#persona-management-block .flex-container:has(#create_dummy_persona)',
-            '.persona_management_left_column .flex-container:first-child',
-            '#persona_search_bar',
-            '#create_dummy_persona'
-        ]
+        nameSpan: '.ch_name'
     };
 
     const IDS = {
         filterWrapper: 'pgm-filter-wrapper',
         filterSelect: 'pgm-filter-select',
         tagsToggle: 'pgm-tags-toggle',
+        folderToggle: 'pgm-folder-toggle',
+        folderHeader: 'pgm-folder-header',
+        backButton: 'pgm-back-button',
         popover: 'pgm-popover',
         backdrop: 'pgm-backdrop'
     };
 
     const CLASSES = {
         groupBtn: 'pgm-group-btn',
-        active: 'pgm-active'
+        active: 'pgm-active',
+        folderCard: 'pgm-folder-card',
+        hidden: 'pgm-hidden',
+        processed: 'pgm-processed'
     };
-	
+
     const { extensionSettings, saveSettingsDebounced, eventSource, event_types } = SillyTavern.getContext();
+
     const defaultSettings = Object.freeze({
         selectedGroup: '',
         personaGroups: {},
-        showTags: false
+        showTags: false,
+        showFolders: false
     });
+
+    let settings = {};
+    let isUICreated = false;
+    let originalPersonaCards = new Map();
+    let currentFolderView = null;
+    let lastCardsCount = 0;
+    let lastCardsHash = '';
+    let checkInterval = null;
 
     function getSettings() {
         if (!extensionSettings[EXT_NAME]) {
             extensionSettings[EXT_NAME] = structuredClone(defaultSettings);
         }
-
-        for (const key of Object.keys(defaultSettings)) {
-            if (!Object.hasOwn(extensionSettings[EXT_NAME], key)) {
-                extensionSettings[EXT_NAME][key] = defaultSettings[key];
-            }
-        }
-
         return extensionSettings[EXT_NAME];
-    }
-
-    let settings = getSettings();
-    let isUICreated = false;
-    let avatarObserver = null;
-    let lastPersonaManagerState = false;
-
-    async function init() {
-        log('Initializing extension v' + VERSION + '...');
-        await loadSettings();
-        setupEventListeners();
-        setTimeout(() => tryCreateUI(), 100);
-        setTimeout(() => tryCreateUI(), 500);
-        setTimeout(() => tryCreateUI(), 1000);
-        setInterval(checkPersonaManagerVisibility, 2000);
-        log('Extension initialization completed');
-    }
-
-    function unload() {
-        log('Unloading extension...');
-        avatarObserver?.disconnect();
-        closePopover();
-        cleanupUI();
-        eventSource.removeListener(event_types.SETTINGS_UPDATED, handleSettingsUpdated);
-        eventSource.removeListener(event_types.CHARACTER_PAGE_LOADED, handleCharacterPageLoaded);
-        eventSource.removeListener(event_types.OPEN_CHARACTER_LIBRARY, handleCharacterLibraryOpened);
-    }
-
-    async function loadSettings() {
-        settings = getSettings();
-        log('Settings loaded from SillyTavern context');
     }
 
     async function saveSettings() {
         Object.assign(extensionSettings[EXT_NAME], settings);
         saveSettingsDebounced();
-        log('Settings saved via SillyTavern');
+        log('Settings saved');
+    }
+
+    async function init() {
+        log('Initializing extension v' + VERSION);
+        settings = getSettings();
+        setupEventListeners();
+        setTimeout(tryCreateUI, 100);
+        setInterval(checkPersonaManager, 2000);
+        log('Extension initialized');
     }
 
     function setupEventListeners() {
-        eventSource.on(event_types.SETTINGS_UPDATED, handleSettingsUpdated);
-        eventSource.on(event_types.CHARACTER_PAGE_LOADED, handleCharacterPageLoaded);
-        eventSource.on(event_types.OPEN_CHARACTER_LIBRARY, handleCharacterLibraryOpened);
-
-        log('Event listeners setup completed');
+        eventSource.on(event_types.SETTINGS_UPDATED, () => setTimeout(tryCreateUI, 100));
+        eventSource.on(event_types.CHARACTER_PAGE_LOADED, () => setTimeout(tryCreateUI, 200));
     }
 
-    function handleSettingsUpdated() {
-        log('Settings updated event received');
-        setTimeout(() => tryCreateUI(), 100);
-    }
-
-    function handleCharacterPageLoaded() {
-        log('Character page loaded event received');
-        setTimeout(() => tryCreateUI(), 200);
-    }
-
-    function handleCharacterLibraryOpened() {
-        log('Character library opened event received');
-        setTimeout(() => tryCreateUI(), 300);
-    }
-
-    function checkPersonaManagerVisibility() {
+    function checkPersonaManager() {
         const isVisible = isPersonaManagerVisible();
+        if (isVisible && !isUICreated) {
+            tryCreateUI();
+        } else if (!isVisible && isUICreated) {
+            stopCardsMonitoring();
+            isUICreated = false;
+        }
+    }
 
-        if (isVisible !== lastPersonaManagerState) {
-            lastPersonaManagerState = isVisible;
-            log('Persona manager visibility changed:', isVisible);
+    function startCardsMonitoring() {
+        if (checkInterval) return;
 
-            if (isVisible) {
-                setTimeout(() => tryCreateUI(), 100);
-            } else {
-                isUICreated = false;
-                avatarObserver?.disconnect();
+        checkInterval = setInterval(() => {
+            if (!isPersonaManagerVisible()) return;
+
+            const cards = getAvatarCards();
+            const currentCount = cards.length;
+
+            const currentHash = cards
+                .map(card => card.dataset.avatarId || '')
+                .filter(id => id && !id.startsWith('folder-'))
+                .sort()
+                .join('|');
+
+            if (currentCount !== lastCardsCount || currentHash !== lastCardsHash) {
+                log('Cards changed');
+                lastCardsCount = currentCount;
+                lastCardsHash = currentHash;
+                storeOriginalCards();
+                resetProcessedFlags();
+                updateView();
             }
+        }, 1000);
+
+        log('Cards monitoring started');
+    }
+
+    function stopCardsMonitoring() {
+        if (checkInterval) {
+            clearInterval(checkInterval);
+            checkInterval = null;
+            log('Cards monitoring stopped');
         }
     }
 
     function tryCreateUI() {
-        if (!isPersonaManagerVisible()) {
-            return false;
-        }
+        if (!isPersonaManagerVisible()) return false;
 
-        if (isUICreated && document.getElementById(IDS.filterWrapper) && document.getElementById(IDS.tagsToggle)) {
-            return true;
-        }
-
-        log('Creating/updating UI...');
+        if (isUICreated) return true;
 
         const success = createUI();
         if (success) {
             isUICreated = true;
-            setupAvatarObserver();
+            startCardsMonitoring();
+            setTimeout(() => {
+                storeOriginalCards();
+                updateView();
+            }, 100);
         }
-
         return success;
     }
 
-    function setupAvatarObserver() {
-        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
-        if (!avatarBlock) return;
-
-        if (avatarObserver?.target === avatarBlock) return;
-
-        avatarObserver?.disconnect();
-
-        avatarObserver = new MutationObserver(debounce(() => {
-            log('Avatar list changed, updating cards...');
-            updateAvatarCards();
-        }, 200));
-
-        avatarObserver.target = avatarBlock;
-        avatarObserver.observe(avatarBlock, {
-            childList: true,
-            subtree: false
-        });
-
-        log('Avatar observer setup for:', avatarBlock);
-    }
-
     function createUI() {
-        if (!isPersonaManagerVisible()) {
-            log('Persona manager not visible, skipping UI creation');
-            return false;
-        }
-
-        log('Creating UI components...');
-
-        const filterCreated = createFilterUI();
-        const toggleCreated = createTagsToggle();
-        const toolsCreated = createToolsButtons();
-
-        if (filterCreated && toggleCreated && toolsCreated) {
-            setTimeout(() => updateAvatarCards(), 50);
-            log('UI creation successful');
-            return true;
-        }
-
-        log('UI creation failed - some components missing');
-        return false;
-    }
-
-    function createToolsButtons() {
         const header = getHeaderRow();
         if (!header) return false;
 
-        if (header.querySelector('.pgm-tools')) return true;
+        createFilterUI(header);
+        createTagsToggle(header);
+        createFolderToggle(header);
+        createFolderHeader();
 
-        const toolsContainer = createElement('div', {
-            className: 'pgm-tools',
-            style: 'display: flex; gap: 4px; margin-left: 8px;'
-        });
-
-        const exportBtn = createElement('button', {
-            type: 'button',
-            className: 'pgm-export-btn menu_button',
-            innerHTML: '<i class="fa-solid fa-download"></i>',
-            title: 'Export groups'
-        });
-
-        const importBtn = createElement('button', {
-            type: 'button',
-            className: 'pgm-import-btn menu_button',
-            innerHTML: '<i class="fa-solid fa-upload"></i>',
-            title: 'Import groups'
-        });
-
-        const fileInput = createElement('input', {
-            type: 'file',
-            accept: '.json',
-            style: 'display: none'
-        });
-
-        exportBtn.addEventListener('click', exportGroups);
-        importBtn.addEventListener('click', () => fileInput.click());
-
-        fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                importGroups(file);
-            }
-            fileInput.value = '';
-        });
-
-        toolsContainer.append(exportBtn, importBtn, fileInput);
-        header.appendChild(toolsContainer);
-
-        log('Tools buttons created successfully');
+        log('UI created successfully');
         return true;
     }
 
-    function createFilterUI() {
-        if (document.getElementById(IDS.filterWrapper)) {
-            updateFilterOptions();
-            return true;
-        }
-
-        const header = getHeaderRow();
-        if (!header) {
-            log('Header not found for filter UI');
-            return false;
-        }
+    function createFilterUI(header) {
+        if (document.getElementById(IDS.filterWrapper)) return;
 
         const wrapper = createElement('div', {
             id: IDS.filterWrapper,
-            className: 'pgm-filter',
-            style: 'display: flex; align-items: center; gap: 8px; margin-left: 12px;'
+            className: 'pgm-filter'
         });
 
         const label = createElement('label', {
@@ -269,8 +168,7 @@
 
         const select = createElement('select', {
             id: IDS.filterSelect,
-            className: 'pgm-filter-select menu_select',
-            style: 'min-width: 120px;'
+            className: 'pgm-filter-select menu_select'
         });
 
         const resetBtn = createElement('button', {
@@ -278,204 +176,620 @@
             textContent: 'Reset',
             className: 'pgm-filter-btn menu_button'
         });
-        select.addEventListener('change', debounce(() => {
-            const newValue = select.value;
-            if (settings.selectedGroup !== newValue) {
-                settings.selectedGroup = newValue;
-                saveSettings();
-                applyFilter();
-            }
-        }, 100));
+
+        select.addEventListener('change', () => {
+            settings.selectedGroup = select.value;
+            saveSettings();
+            applyFilter();
+        });
 
         resetBtn.addEventListener('click', () => {
-            if (settings.selectedGroup !== '') {
-                settings.selectedGroup = '';
-                select.value = '';
-                saveSettings();
-                applyFilter();
-            }
+            settings.selectedGroup = '';
+            select.value = '';
+            saveSettings();
+            applyFilter();
         });
 
         wrapper.append(label, select, resetBtn);
         header.appendChild(wrapper);
-
         updateFilterOptions();
-        log('Filter UI created successfully');
-        return true;
     }
 
-    function createTagsToggle() {
-        if (document.getElementById(IDS.tagsToggle)) {
-            updateTagsToggleButton();
-            return true;
-        }
+    function createTagsToggle(header) {
+    if (document.getElementById(IDS.tagsToggle)) return;
 
-        const header = getHeaderRow();
-        if (!header) {
-            log('Header not found for tags toggle');
-            return false;
+    const btn = createElement('button', {
+        id: IDS.tagsToggle,
+        type: 'button',
+        className: 'pgm-tags-toggle menu_button',
+        innerHTML: '<i class="fa-solid fa-tags"></i>',
+        title: 'Toggle group management'
+    });
+
+    btn.addEventListener('click', () => {
+        settings.showTags = !settings.showTags;
+        saveSettings();
+        updateTagsButton();
+        resetProcessedFlags();
+
+        if (settings.showFolders) {
+            updateFolderCards();
+            updatePersonaCards();
+        } else {
+            updatePersonaCards();
         }
+    });
+
+    header.appendChild(btn);
+    updateTagsButton();
+}
+
+function updateFolderCards() {
+    const folderCards = document.querySelectorAll(`.${CLASSES.folderCard}`);
+
+    folderCards.forEach(folderCard => {
+        const groupName = folderCard.dataset.groupName;
+        if (!groupName) return;
+
+        const nameBlock = folderCard.querySelector(SELECTORS.nameBlock);
+        if (!nameBlock) return;
+
+        const existingBtns = nameBlock.querySelectorAll('.pgm-folder-manage');
+        existingBtns.forEach(btn => btn.remove());
+
+        if (settings.showTags) {
+            const groupBtn = createElement('button', {
+                type: 'button',
+                className: `${CLASSES.groupBtn} pgm-folder-manage menu_button`,
+                innerHTML: '<i class="fa-solid fa-cog"></i>',
+                title: 'Manage folder'
+            });
+
+            groupBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                openFolderManager(groupBtn, groupName);
+            });
+
+            groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+            groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
+
+            const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
+            if (nameSpan) {
+                nameSpan.insertAdjacentElement('afterend', groupBtn);
+            } else {
+                nameBlock.appendChild(groupBtn);
+            }
+        }
+    });
+}
+
+    function createFolderToggle(header) {
+        if (document.getElementById(IDS.folderToggle)) return;
 
         const btn = createElement('button', {
-            id: IDS.tagsToggle,
+            id: IDS.folderToggle,
             type: 'button',
-            className: 'pgm-tags-toggle menu_button',
-            innerHTML: '<i class="fa-solid fa-tags"></i>',
-            title: 'Toggle group management',
-            style: 'margin-left: 8px;'
+            className: 'pgm-folder-toggle menu_button',
+            innerHTML: '<i class="fa-solid fa-folder"></i>',
+            title: 'Toggle folder view'
         });
 
-        btn.addEventListener('click', debounce(() => {
-            settings.showTags = !settings.showTags;
+        btn.addEventListener('click', () => {
+            settings.showFolders = !settings.showFolders;
+            currentFolderView = null;
             saveSettings();
-            updateTagsToggleButton();
-            updateAvatarCards();
-            log('Tags toggle clicked, new state:', settings.showTags);
-        }, 150));
+            updateFolderButton();
+            resetProcessedFlags();
+            updateView();
+        });
 
         header.appendChild(btn);
-        updateTagsToggleButton();
-        log('Tags toggle created successfully');
-        return true;
+        updateFolderButton();
     }
 
-    function updateTagsToggleButton() {
+    function createFolderHeader() {
+        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
+        if (!avatarBlock || document.getElementById(IDS.folderHeader)) return;
+
+        const folderHeader = createElement('div', {
+            id: IDS.folderHeader,
+            className: 'pgm-folder-header pgm-hidden'
+        });
+
+        const backButton = createElement('button', {
+            id: IDS.backButton,
+            type: 'button',
+            className: 'pgm-back-button menu_button',
+            innerHTML: '<i class="fa-solid fa-arrow-left"></i>',
+            title: 'Back to folders'
+        });
+
+        const folderTitle = createElement('div', {
+            className: 'pgm-folder-title',
+            textContent: ''
+        });
+
+        backButton.addEventListener('click', () => {
+            currentFolderView = null;
+            updateView();
+        });
+
+        folderHeader.append(backButton, folderTitle);
+        avatarBlock.parentNode.insertBefore(folderHeader, avatarBlock);
+    }
+
+    function updateTagsButton() {
         const btn = document.getElementById(IDS.tagsToggle);
         if (!btn) return;
 
         btn.classList.toggle(CLASSES.active, settings.showTags);
-        btn.title = settings.showTags ? 'Hide group management' : 'Show group management';
     }
 
-    function updateAvatarCards() {
-        try {
-            log('Updating avatar cards...');
+    function updateFolderButton() {
+        const btn = document.getElementById(IDS.folderToggle);
+        if (!btn) return;
 
-            const avatarCards = getAvatarCards();
+        btn.classList.toggle(CLASSES.active, settings.showFolders);
+    }
 
-            if (!settings.showTags) {
-                avatarCards.forEach(card => {
-                    const groupBtn = card.querySelector(`.${CLASSES.groupBtn}`);
-                    if (groupBtn) {
-                        groupBtn.style.display = 'none';
-                    }
+    function storeOriginalCards() {
+        const cards = getAvatarCards();
+        let newCardsCount = 0;
+
+        cards.forEach(card => {
+            const avatarId = card.dataset.avatarId;
+            if (avatarId && !card.classList.contains(CLASSES.folderCard) && !originalPersonaCards.has(avatarId)) {
+                originalPersonaCards.set(avatarId, {
+                    element: card.cloneNode(true),
+                    visible: card.style.display !== 'none'
                 });
+                newCardsCount++;
+            }
+        });
+
+        if (newCardsCount > 0) {
+            log('Stored', newCardsCount, 'new cards. Total:', originalPersonaCards.size);
+        }
+    }
+
+    function resetProcessedFlags() {
+        const cards = getAvatarCards();
+        cards.forEach(card => {
+            card.classList.remove(CLASSES.processed);
+        });
+    }
+
+    function updateView() {
+        const folderHeader = document.getElementById(IDS.folderHeader);
+
+        if (settings.showFolders) {
+            if (currentFolderView) {
+                showFolderContent(currentFolderView);
+                if (folderHeader) {
+                    folderHeader.classList.remove(CLASSES.hidden);
+                    const title = folderHeader.querySelector('.pgm-folder-title');
+                    if (title) {
+                        const personasCount = getPersonasInGroup(currentFolderView).length;
+                        title.textContent = `${currentFolderView} (${personasCount})`;
+                    }
+                }
             } else {
-                avatarCards.forEach(card => {
-                    const avatarId = card.dataset.avatarId;
-                    if (!avatarId) return;
+                showFolderView();
+                if (folderHeader) {
+                    folderHeader.classList.add(CLASSES.hidden);
+                }
+            }
+        } else {
+            showNormalView();
+            if (folderHeader) {
+                folderHeader.classList.add(CLASSES.hidden);
+            }
+        }
+        updateFilterState();
+    }
 
-                    const nameBlock = card.querySelector(SELECTORS.nameBlock);
-                    if (!nameBlock) return;
+    function showFolderView() {
+        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
+        if (!avatarBlock) return;
 
-                    let groupBtn = nameBlock.querySelector(`.${CLASSES.groupBtn}`);
-                    if (!groupBtn) {
-                        groupBtn = createElement('button', {
-                            type: 'button',
-                            className: `${CLASSES.groupBtn} menu_button`,
-                            innerHTML: '<i class="fa-solid fa-tags"></i>',
-                            title: 'Manage groups',
-                            style: 'margin-left: 4px;'
-                        });
-                        groupBtn.addEventListener('click', (e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            openGroupManager(e.target, avatarId);
-                        });
+        avatarBlock.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
 
-                        groupBtn.addEventListener('mousedown', (e) => {
-                            e.stopPropagation();
-                        });
+        const groups = getAllGroups();
+        const usedPersonas = new Set();
 
-                        const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
-                        if (nameSpan && nameSpan.parentNode === nameBlock) {
-                            nameSpan.insertAdjacentElement('afterend', groupBtn);
-                        } else {
-                            nameBlock.appendChild(groupBtn);
+        log('Creating folders for groups:', groups.map(g => g.name));
+
+        groups.forEach(({ name, count }) => {
+            const personasInGroup = getPersonasInGroup(name);
+            if (personasInGroup.length === 0) return;
+
+            const firstPersonaId = personasInGroup[0];
+            const originalCard = originalPersonaCards.get(firstPersonaId);
+            if (!originalCard) {
+                log('Warning: No original card found for persona:', firstPersonaId);
+                return;
+            }
+
+            const folderCard = createFolderCard(name, count, originalCard.element, personasInGroup);
+            avatarBlock.appendChild(folderCard);
+
+            personasInGroup.forEach(id => usedPersonas.add(id));
+            log('Created folder:', name, 'with personas:', personasInGroup);
+        });
+
+        originalPersonaCards.forEach((data, avatarId) => {
+            const currentCard = avatarBlock.querySelector(`[data-avatar-id="${avatarId}"]:not(.${CLASSES.folderCard})`);
+            if (currentCard) {
+                currentCard.style.display = usedPersonas.has(avatarId) ? 'none' : '';
+                currentCard.classList.remove(CLASSES.hidden);
+            }
+        });
+
+        updatePersonaCards();
+        log('Folder view created with', groups.length, 'folders');
+    }
+
+    function showFolderContent(folderName) {
+        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
+        if (!avatarBlock) return;
+
+        const personasInFolder = getPersonasInGroup(folderName);
+
+        avatarBlock.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
+
+        originalPersonaCards.forEach((data, avatarId) => {
+            const currentCard = avatarBlock.querySelector(`[data-avatar-id="${avatarId}"]`);
+            if (currentCard) {
+                if (personasInFolder.includes(avatarId)) {
+                    currentCard.style.display = '';
+                    currentCard.classList.remove(CLASSES.hidden);
+                } else {
+                    currentCard.style.display = 'none';
+                    currentCard.classList.add(CLASSES.hidden);
+                }
+            }
+        });
+
+        updatePersonaCards();
+        log('Showing folder content for:', folderName, 'with', personasInFolder.length, 'personas');
+    }
+
+    function showNormalView() {
+        const avatarBlock = document.querySelector(SELECTORS.avatarBlock);
+        if (!avatarBlock) return;
+
+        avatarBlock.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
+
+        originalPersonaCards.forEach((data, avatarId) => {
+            const currentCard = avatarBlock.querySelector(`[data-avatar-id="${avatarId}"]`);
+            if (currentCard) {
+                currentCard.style.display = '';
+                currentCard.classList.remove(CLASSES.hidden);
+            }
+        });
+
+        updatePersonaCards();
+        if (settings.selectedGroup) {
+            applyFilter();
+        }
+
+        log('Normal view restored');
+    }
+
+    function createFolderCard(groupName, count, templateCard, personasInGroup) {
+        const folderCard = templateCard.cloneNode(true);
+        folderCard.classList.add(CLASSES.folderCard);
+        folderCard.classList.add(CLASSES.processed);
+        folderCard.dataset.groupName = groupName;
+        folderCard.dataset.avatarId = `folder-${groupName}`;
+
+        const nameSpan = folderCard.querySelector(SELECTORS.nameSpan);
+        if (nameSpan) {
+            nameSpan.textContent = `${groupName} (${count})`;
+        }
+
+        folderCard.querySelectorAll(`.${CLASSES.groupBtn}`).forEach(btn => btn.remove());
+
+        if (settings.showTags) {
+            const nameBlock = folderCard.querySelector(SELECTORS.nameBlock);
+            if (nameBlock) {
+                const groupBtn = createElement('button', {
+                    type: 'button',
+                    className: `${CLASSES.groupBtn} pgm-folder-manage menu_button`,
+                    innerHTML: '<i class="fa-solid fa-cog"></i>',
+                    title: 'Manage folder'
+                });
+
+                groupBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    openFolderManager(groupBtn, groupName);
+                });
+
+                groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+                groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
+
+                const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
+                if (nameSpan) {
+                    nameSpan.insertAdjacentElement('afterend', groupBtn);
+                } else {
+                    nameBlock.appendChild(groupBtn);
+                }
+            }
+        }
+
+        folderCard.addEventListener('click', (e) => {
+            if (e.target.closest('.pgm-folder-manage')) {
+                return;
+            }
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            currentFolderView = groupName;
+            updateView();
+        });
+
+        folderCard.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.pgm-folder-manage')) {
+                return;
+            }
+            e.preventDefault();
+        });
+
+        return folderCard;
+    }
+
+    function openFolderManager(anchor, groupName) {
+    log('Opening folder manager for:', groupName);
+    closePopup();
+
+    const backdrop = createElement('div', {
+        id: IDS.backdrop,
+        className: 'pgm-backdrop'
+    });
+
+    const popup = createElement('div', {
+        id: IDS.popover,
+        className: 'pgm-popover'
+    });
+
+    const title = createElement('div', {
+        className: 'pgm-popover-title',
+        textContent: `Manage Folder: ${groupName}`
+    });
+
+    const personasList = createElement('div', {
+        className: 'pgm-groups-list'
+    });
+
+    const deleteBtn = createElement('button', {
+        type: 'button',
+        textContent: 'Delete Folder',
+        className: 'menu_button pgm-delete-folder-btn'
+    });
+
+    const closeBtn = createElement('button', {
+        type: 'button',
+        textContent: 'Done',
+        className: 'pgm-close-btn menu_button'
+    });
+
+    const buttonRow = createElement('div', {
+        className: 'pgm-button-row'
+    });
+
+    function renderPersonas() {
+        const personasInGroup = getPersonasInGroup(groupName);
+        personasList.innerHTML = '';
+
+        if (personasInGroup.length === 0) {
+            personasList.innerHTML = '<div class="pgm-empty">No personas in this folder</div>';
+            return;
+        }
+
+        personasInGroup.forEach(avatarId => {
+            const originalCard = originalPersonaCards.get(avatarId);
+            if (!originalCard) return;
+
+            const nameSpan = originalCard.element.querySelector(SELECTORS.nameSpan);
+            const personaName = nameSpan ? nameSpan.textContent : avatarId;
+
+            const row = createElement('div', {
+                className: 'pgm-group-row pgm-persona-row'
+            });
+
+            const nameSpanEl = createElement('span', {
+                textContent: personaName,
+                className: 'pgm-group-name'
+            });
+
+            const removeBtn = createElement('button', {
+                type: 'button',
+                textContent: 'Remove',
+                className: 'menu_button pgm-remove-persona-btn'
+            });
+
+            removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                removePersonaFromGroup(avatarId, groupName);
+                renderPersonas();
+
+                const remainingPersonas = getPersonasInGroup(groupName);
+                if (remainingPersonas.length === 0) {
+                    closePopup();
+                    currentFolderView = null;
+                    updateView();
+                } else {
+                    if (currentFolderView === groupName) {
+                        const folderHeader = document.getElementById(IDS.folderHeader);
+                        if (folderHeader) {
+                            const title = folderHeader.querySelector('.pgm-folder-title');
+                            if (title) {
+                                title.textContent = `${groupName} (${remainingPersonas.length})`;
+                            }
                         }
                     }
+                    resetProcessedFlags();
+                    updateView();
+                }
+            });
 
-                    groupBtn.style.display = 'inline-block';
+            row.append(nameSpanEl, removeBtn);
+            personasList.appendChild(row);
+        });
+    }
+
+    deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete folder "${groupName}"? All personas will be ungrouped.`)) {
+            const personasInGroup = getPersonasInGroup(groupName);
+            personasInGroup.forEach(avatarId => {
+                removePersonaFromGroup(avatarId, groupName);
+            });
+            closePopup();
+            currentFolderView = null;
+            updateView();
+        }
+    });
+
+    closeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closePopup();
+    });
+
+    backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) {
+            closePopup();
+        }
+    });
+
+    function handleKeydown(e) {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closePopup();
+        }
+    }
+
+    document.addEventListener('keydown', handleKeydown);
+
+    const preventBubbling = (e) => {
+        e.stopPropagation();
+    };
+
+    popup.addEventListener('click', preventBubbling);
+    popup.addEventListener('mousedown', preventBubbling);
+    popup.addEventListener('mouseup', preventBubbling);
+
+    buttonRow.append(deleteBtn, closeBtn);
+    popup.append(title, personasList, buttonRow);
+    document.body.append(backdrop, popup);
+
+    positionPopup(popup, anchor);
+    renderPersonas();
+
+    popup._cleanup = () => {
+        document.removeEventListener('keydown', handleKeydown);
+    };
+}
+
+    function positionPopup(popup, anchor) {
+        requestAnimationFrame(() => {
+            const rect = anchor.getBoundingClientRect();
+            const popupRect = popup.getBoundingClientRect();
+
+            let left = rect.left + (rect.width / 2) - (popupRect.width / 2);
+            let top = rect.bottom + 10;
+
+            if (left + popupRect.width > window.innerWidth) {
+                left = window.innerWidth - popupRect.width - 10;
+            }
+            if (left < 10) {
+                left = 10;
+            }
+
+            if (top + popupRect.height > window.innerHeight) {
+                top = rect.top - popupRect.height - 10;
+            }
+            if (top < 10) {
+                top = 10;
+            }
+
+            popup.style.left = left + 'px';
+            popup.style.top = top + 'px';
+        });
+    }
+
+    function closePopup() {
+        const popup = document.getElementById(IDS.popover);
+        const backdrop = document.getElementById(IDS.backdrop);
+
+        if (popup && popup._cleanup) {
+            popup._cleanup();
+        }
+
+        backdrop?.remove();
+        popup?.remove();
+    }
+
+    function updatePersonaCards() {
+        const cards = getAvatarCards();
+
+        cards.forEach(card => {
+            if (card.classList.contains(CLASSES.folderCard)) return;
+
+            if (card.classList.contains(CLASSES.processed)) return;
+
+            const avatarId = card.dataset.avatarId;
+            if (!avatarId) return;
+
+            const nameBlock = card.querySelector(SELECTORS.nameBlock);
+            if (!nameBlock) return;
+
+            const existingBtns = nameBlock.querySelectorAll(`.${CLASSES.groupBtn}`);
+            existingBtns.forEach(btn => btn.remove());
+
+            if (settings.showTags) {
+                const groupBtn = createElement('button', {
+                    type: 'button',
+                    className: `${CLASSES.groupBtn} menu_button`,
+                    innerHTML: '<i class="fa-solid fa-tags"></i>',
+                    title: 'Manage groups'
                 });
+
+                groupBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    openGroupManager(groupBtn, avatarId);
+                });
+
+                groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+                groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
+
+                const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
+                if (nameSpan) {
+                    nameSpan.insertAdjacentElement('afterend', groupBtn);
+                } else {
+                    nameBlock.appendChild(groupBtn);
+                }
             }
 
-            log('Avatar cards updated successfully, cards:', avatarCards.length);
-        } catch (error) {
-            warn('Error updating avatar cards:', error);
-        }
-    }
-
-    async function exportGroups() {
-        try {
-            const data = {
-                version: VERSION,
-                timestamp: Date.now(),
-                selectedGroup: settings.selectedGroup,
-                personaGroups: settings.personaGroups,
-                showTags: settings.showTags
-            };
-
-            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `personas-${new Date().toISOString().split('T')[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-
-            log('Groups exported successfully');
-            return true;
-        } catch (e) {
-            warn('Export failed:', e);
-            return false;
-        }
-    }
-
-    async function importGroups(file) {
-        try {
-            const text = await file.text();
-            const data = JSON.parse(text);
-
-            if (data.personaGroups) {
-                const oldCount = Object.keys(settings.personaGroups).length;
-
-                settings.selectedGroup = data.selectedGroup || '';
-                settings.personaGroups = { ...settings.personaGroups, ...data.personaGroups };
-                settings.showTags = data.showTags !== undefined ? data.showTags : settings.showTags;
-
-                await saveSettings();
-                updateFilterOptions();
-                updateAvatarCards();
-                applyFilter();
-
-                const newCount = Object.keys(settings.personaGroups).length;
-                log(`Groups imported successfully. Personas: ${oldCount} -> ${newCount}`);
-
-                alert(`Import successful!\nPersonas before: ${oldCount}\nPersonas after: ${newCount}`);
-                return true;
-            } else {
-                throw new Error('Invalid file format');
-            }
-        } catch (e) {
-            warn('Import failed:', e);
-            alert('Import failed: ' + e.message);
-            return false;
-        }
+            card.classList.add(CLASSES.processed);
+        });
     }
 
     function openGroupManager(anchor, avatarId) {
-        log('Opening group manager for avatar:', avatarId);
-        closePopover();
+        log('Opening group manager for:', avatarId);
+        closePopup();
 
         const backdrop = createElement('div', {
             id: IDS.backdrop,
             className: 'pgm-backdrop'
         });
 
-        const popover = createElement('div', {
+        const popup = createElement('div', {
             id: IDS.popover,
             className: 'pgm-popover'
         });
@@ -495,23 +809,23 @@
 
         const addInput = createElement('input', {
             type: 'text',
-            className: 'pgm-add-input',
-            placeholder: 'New group name'
+            placeholder: 'New group name',
+            className: 'pgm-add-input'
         });
 
         const addBtn = createElement('button', {
             type: 'button',
-            className: 'pgm-add-btn menu_button',
-            textContent: 'Add'
+            textContent: 'Add',
+            className: 'pgm-add-btn menu_button'
         });
 
         const closeBtn = createElement('button', {
             type: 'button',
-            className: 'pgm-close-btn menu_button',
-            textContent: 'Done'
+            textContent: 'Done',
+            className: 'pgm-close-btn menu_button'
         });
 
-        function renderGroupsList() {
+        function renderGroups() {
             const personaGroups = settings.personaGroups[avatarId] || [];
             const allGroups = getAllGroups();
 
@@ -544,129 +858,94 @@
                     textContent: `(${count})`
                 });
 
-                checkbox.addEventListener('change', debounce(() => {
+                checkbox.addEventListener('change', (e) => {
+                    e.stopPropagation();
                     if (checkbox.checked) {
                         addPersonaToGroup(avatarId, name);
                     } else {
                         removePersonaFromGroup(avatarId, name);
                     }
-                    setTimeout(renderGroupsList, 50);
-                    log('Group', name, checkbox.checked ? 'added to' : 'removed from', avatarId);
-                }, 100));
+                    setTimeout(() => {
+                        renderGroups();
+                        if (settings.showFolders) {
+                            resetProcessedFlags();
+                            updateView();
+                        }
+                    }, 50);
+                });
 
                 row.append(checkbox, nameSpan, countSpan);
                 groupsList.appendChild(row);
             });
         }
 
-        function handleEscapeKey(e) {
-            if (e.key === 'Escape') closePopover();
-        }
-
-        addBtn.addEventListener('click', () => {
+        addBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
             const groupName = addInput.value.trim();
             if (!groupName) return;
 
             addPersonaToGroup(avatarId, groupName);
             addInput.value = '';
-            renderGroupsList();
-            log('Added group:', groupName, 'to avatar:', avatarId);
+            renderGroups();
+
+            if (settings.showFolders) {
+                resetProcessedFlags();
+                updateView();
+            }
         });
 
         addInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
                 addBtn.click();
             }
             if (e.key === 'Escape') {
-                closePopover();
+                e.preventDefault();
+                e.stopPropagation();
+                closePopup();
             }
         });
 
-        closeBtn.addEventListener('click', closePopover);
-
-        backdrop.addEventListener('click', (e) => {
-            if (e.target === backdrop) closePopover();
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closePopup();
         });
 
-        document.addEventListener('keydown', handleEscapeKey);
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) {
+                closePopup();
+            }
+        });
+
+        function handleKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                closePopup();
+            }
+        }
+
+        document.addEventListener('keydown', handleKeydown);
 
         const preventBubbling = (e) => {
             e.stopPropagation();
         };
 
-        popover.addEventListener('click', preventBubbling);
-        popover.addEventListener('mousedown', preventBubbling);
-        popover.addEventListener('mouseup', preventBubbling);
+        popup.addEventListener('click', preventBubbling);
+        popup.addEventListener('mousedown', preventBubbling);
+        popup.addEventListener('mouseup', preventBubbling);
 
         addSection.append(addInput, addBtn);
-        popover.append(title, groupsList, addSection, closeBtn);
+        popup.append(title, groupsList, addSection, closeBtn);
+        document.body.append(backdrop, popup);
 
-        document.body.append(backdrop, popover);
+        positionPopup(popup, anchor);
+        renderGroups();
 
-        positionPopover(popover, anchor);
-        renderGroupsList();
-
-        popover._cleanup = () => {
-            document.removeEventListener('keydown', handleEscapeKey);
-            popover.removeEventListener('click', preventBubbling);
-            popover.removeEventListener('mousedown', preventBubbling);
-            popover.removeEventListener('mouseup', preventBubbling);
+        popup._cleanup = () => {
+            document.removeEventListener('keydown', handleKeydown);
         };
-
-        log('Group manager opened successfully');
-    }
-
-    function closePopover() {
-        const popover = document.getElementById(IDS.popover);
-        const backdrop = document.getElementById(IDS.backdrop);
-
-        if (popover?._cleanup) {
-            try {
-                popover._cleanup();
-                log('Popover cleanup completed');
-            } catch (e) {
-                warn('Popover cleanup error:', e);
-            }
-        }
-
-        backdrop?.remove();
-        popover?.remove();
-        log('Popover closed');
-    }
-
-    function positionPopover(popover, anchor) {
-        const isMobile = window.innerWidth <= 768;
-
-        if (isMobile) {
-            const width = Math.min(300, window.innerWidth - 20);
-            const height = Math.min(400, window.innerHeight - 40);
-
-            popover.style.cssText = `
-                width: ${width}px;
-                max-height: ${height}px;
-                left: ${(window.innerWidth - width) / 2}px;
-                top: ${(window.innerHeight - height) / 2}px;
-                position: fixed;
-            `;
-            return;
-        }
-
-        const rect = anchor.getBoundingClientRect();
-        let left = rect.left;
-        let top = rect.bottom + 8;
-
-        if (left + 300 > window.innerWidth) {
-            left = window.innerWidth - 310;
-        }
-        if (top + 400 > window.innerHeight) {
-            top = rect.top - 408;
-        }
-
-        popover.style.cssText = `
-            left: ${Math.max(10, left)}px;
-            top: ${Math.max(10, top)}px;
-            position: fixed;
-        `;
     }
 
     async function addPersonaToGroup(avatarId, groupName) {
@@ -679,7 +958,6 @@
             groups.push(groupName);
             await saveSettings();
             updateFilterOptions();
-            applyFilter();
             log('Added', avatarId, 'to group', groupName);
         }
     }
@@ -691,9 +969,11 @@
         const index = groups.indexOf(groupName);
         if (index > -1) {
             groups.splice(index, 1);
+            if (groups.length === 0) {
+                delete settings.personaGroups[avatarId];
+            }
             await saveSettings();
             updateFilterOptions();
-            applyFilter();
             log('Removed', avatarId, 'from group', groupName);
         }
     }
@@ -712,14 +992,21 @@
             .sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    function getPersonasInGroup(groupName) {
+        const personas = [];
+        for (const [avatarId, groups] of Object.entries(settings.personaGroups)) {
+            if (groups.includes(groupName)) {
+                personas.push(avatarId);
+            }
+        }
+        return personas;
+    }
+
     function updateFilterOptions() {
         const select = document.getElementById(IDS.filterSelect);
         if (!select) return;
 
-        const currentValue = select.value;
         const groups = getAllGroups();
-        const currentWidth = select.offsetWidth;
-
         select.innerHTML = '';
 
         const allOption = createElement('option', {
@@ -736,39 +1023,36 @@
             select.appendChild(option);
         });
 
-        if (settings.selectedGroup && groups.some(g => g.name === settings.selectedGroup)) {
-            select.value = settings.selectedGroup;
-        } else if (currentValue && groups.some(g => g.name === currentValue)) {
-            select.value = currentValue;
-        } else {
-            select.value = '';
-            if (settings.selectedGroup !== '') {
-                settings.selectedGroup = '';
-                saveSettings();
+        select.value = settings.selectedGroup || '';
+    }
+
+    function updateFilterState() {
+        const wrapper = document.getElementById(IDS.filterWrapper);
+        if (wrapper) {
+            wrapper.style.opacity = (settings.showFolders && !currentFolderView) ? '0.5' : '';
+            const select = document.getElementById(IDS.filterSelect);
+            if (select) {
+                select.disabled = (settings.showFolders && !currentFolderView);
             }
         }
-        if (currentWidth > 0) {
-            select.style.minWidth = `${Math.max(currentWidth, 120)}px`;
-        }
-
-        log('Filter options updated, groups:', groups.length);
     }
 
     function applyFilter() {
-        const avatarCards = getAvatarCards();
+        if (settings.showFolders && !currentFolderView) return;
+
+        const cards = getAvatarCards();
         const selectedGroup = settings.selectedGroup;
 
-        log('Applying filter:', selectedGroup || 'All', 'to', avatarCards.length, 'cards');
-        requestAnimationFrame(() => {
-            avatarCards.forEach(card => {
-                const avatarId = card.dataset.avatarId;
-                if (!avatarId) return;
+        cards.forEach(card => {
+            if (card.classList.contains(CLASSES.folderCard)) return;
 
-                const personaGroups = settings.personaGroups[avatarId] || [];
-                const shouldShow = !selectedGroup || personaGroups.includes(selectedGroup);
+            const avatarId = card.dataset.avatarId;
+            if (!avatarId) return;
 
-                card.style.display = shouldShow ? '' : 'none';
-            });
+            const personaGroups = settings.personaGroups[avatarId] || [];
+            const shouldShow = !selectedGroup || personaGroups.includes(selectedGroup);
+
+            card.style.display = shouldShow ? '' : 'none';
         });
     }
 
@@ -778,34 +1062,8 @@
     }
 
     function getHeaderRow() {
-        let header = document.querySelector(SELECTORS.headerRow);
-        if (header) return header;
-
-        for (const selector of SELECTORS.altHeaderSelectors) {
-            try {
-                const element = document.querySelector(selector);
-                if (element) {
-                    header = element.closest('.flex-container') || element.parentElement;
-                    if (header) {
-                        log('Found header using alternative selector:', selector);
-                        return header;
-                    }
-                }
-            } catch (e) {
-				
-            }
-        }
-
-        const leftColumn = document.querySelector('.persona_management_left_column');
-        if (leftColumn) {
-            header = leftColumn.querySelector('.flex-container');
-            if (header) {
-                log('Found header in left column');
-                return header;
-            }
-        }
-
-        return null;
+        return document.querySelector(SELECTORS.headerRow) ||
+               document.querySelector('.persona_management_left_column .flex-container');
     }
 
     function getAvatarCards() {
@@ -831,73 +1089,22 @@
         };
     }
 
-    function cleanupUI() {
-        document.getElementById(IDS.filterWrapper)?.remove();
-        document.getElementById(IDS.tagsToggle)?.remove();
-        document.querySelector('.pgm-tools')?.remove();
-        document.querySelectorAll(`.${CLASSES.groupBtn}`).forEach(btn => btn.remove());
-        isUICreated = false;
-        log('UI cleaned up');
-    }
-
     function log(...args) {
         if (DEBUG) console.log(`[${EXT_NAME}]`, ...args);
     }
 
-    function warn(...args) {
-        console.warn(`[${EXT_NAME}]`, ...args);
+    function unload() {
+        stopCardsMonitoring();
+        closePopup();
+        document.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
+        document.getElementById(IDS.filterWrapper)?.remove();
+        document.getElementById(IDS.tagsToggle)?.remove();
+        document.getElementById(IDS.folderToggle)?.remove();
+        document.getElementById(IDS.folderHeader)?.remove();
+        resetProcessedFlags();
+        log('Extension unloaded');
     }
-	
-    window.pgmSync = async function() {
-        await saveSettings();
-        const info = {
-            personas: Object.keys(settings.personaGroups).length,
-            totalGroups: getAllGroups().length,
-            settings: settings,
-            isManagerVisible: isPersonaManagerVisible(),
-            headerFound: !!getHeaderRow(),
-            avatarCards: getAvatarCards().length,
-            isUICreated: isUICreated
-        };
-        console.log(`[${EXT_NAME}] Sync completed:`, info);
-        return info;
-    };
 
-    window.pgmReset = async function() {
-        if (confirm('Delete ALL persona groups data?')) {
-            settings.personaGroups = {};
-            settings.selectedGroup = '';
-            await saveSettings();
-            tryCreateUI();
-            log('All data cleared');
-        }
-    };
-
-    window.pgmDebug = function() {
-        return {
-            version: VERSION,
-            settings: settings,
-            isManagerVisible: isPersonaManagerVisible(),
-            headerRow: getHeaderRow(),
-            avatarCards: getAvatarCards().length,
-            filterExists: !!document.getElementById(IDS.filterWrapper),
-            toggleExists: !!document.getElementById(IDS.tagsToggle),
-            toolsExists: !!document.querySelector('.pgm-tools'),
-            isUICreated: isUICreated
-        };
-    };
-
-    window.pgmExport = exportGroups;
-    window.pgmImport = function() {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json';
-        input.onchange = (e) => {
-            const file = e.target.files[0];
-            if (file) importGroups(file);
-        };
-        input.click();
-    };
     const registerExtension = window.registerExtension ||
                              (window.SillyTavern && window.SillyTavern.registerExtension);
 
@@ -917,5 +1124,44 @@
         window.addEventListener('beforeunload', unload);
         log('Extension registered via fallback method');
     }
+
+    window.pgmDebug = function() {
+        return {
+            version: VERSION,
+            settings: settings,
+            isManagerVisible: isPersonaManagerVisible(),
+            originalCards: originalPersonaCards.size,
+            isUICreated: isUICreated,
+            groups: getAllGroups(),
+            currentFolderView: currentFolderView,
+            processedCards: document.querySelectorAll(`.${CLASSES.processed}`).length,
+            lastCardsCount: lastCardsCount,
+            lastCardsHash: lastCardsHash.substring(0, 100) + '...',
+            monitoringActive: !!checkInterval
+        };
+    };
+
+    window.pgmReset = async function() {
+        if (confirm('Delete ALL persona groups data?')) {
+            settings.personaGroups = {};
+            settings.selectedGroup = '';
+            settings.showFolders = false;
+            settings.showTags = false;
+            currentFolderView = null;
+            await saveSettings();
+            resetProcessedFlags();
+            updateView();
+            log('All data cleared');
+        }
+    };
+
+    window.pgmForceUpdate = function() {
+        log('Force update triggered');
+        lastCardsCount = -1;
+        lastCardsHash = '';
+        resetProcessedFlags();
+        storeOriginalCards();
+        updateView();
+    };
 
 })();

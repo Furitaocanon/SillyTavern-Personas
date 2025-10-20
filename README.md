@@ -10,6 +10,7 @@ A powerful extension for SillyTavern that allows you to organize your personas w
 - 📱 Mobile Friendly: Responsive design for all devices(I hope so...)
 - 🎨 Theme Integration: Seamlessly integrates with SillyTavern themes
 - 💾 Backup feature and support of SillyTavern persistent settings.
+- Now with folders.
 
 ## Installation
 Use ST's inbuilt extension installer.
@@ -29,6 +30,12 @@ Use ST's inbuilt extension installer.
 - Create New Group: Type a name in the input field and click "Add"
 - Remove from Group: Uncheck the box next to a group name
 - Filter by Group: Use the dropdown in the header to filter personas
+
+### Managing folders
+- Any  group can be viewed as folder. Just press "Toggle folder view" button
+- You can manage folder with "Toggle group management" button
+
+![Folder Manager](screenshots/folder-manager.png)
 
 ### License
 AGPL-3.0
