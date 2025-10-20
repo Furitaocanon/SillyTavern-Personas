@@ -34,11 +34,34 @@
         active: 'pgm-active'
     };
 
-    let settings = {
+    // Get SillyTavern context
+    const { extensionSettings, saveSettingsDebounced } = SillyTavern.getContext();
+
+    // Define default settings
+    const defaultSettings = Object.freeze({
         selectedGroup: '',
         personaGroups: {},
         showTags: false
-    };
+    });
+
+    // Settings management
+    function getSettings() {
+        if (!extensionSettings[EXT_NAME]) {
+            extensionSettings[EXT_NAME] = structuredClone(defaultSettings);
+        }
+
+        // Ensure all default keys exist
+        for (const key of Object.keys(defaultSettings)) {
+            if (!Object.hasOwn(extensionSettings[EXT_NAME], key)) {
+                extensionSettings[EXT_NAME][key] = defaultSettings[key];
+            }
+        }
+
+        return extensionSettings[EXT_NAME];
+    }
+
+    // Initialize settings
+    let settings = getSettings();
 
     let observers = {
         body: null,
@@ -87,66 +110,18 @@
     }
 
     async function loadSettings() {
-        if (!window.extension_settings) window.extension_settings = {};
-
-        let extensionSettings = {};
-        if (extension_settings[EXT_NAME]) {
-            extensionSettings = { ...extension_settings[EXT_NAME] };
-        }
-
-        let localStorageSettings = {};
-        try {
-            const backup = localStorage.getItem(`${EXT_NAME}-backup`);
-            if (backup) {
-                const data = JSON.parse(backup);
-                if (data.personaGroups) {
-                    localStorageSettings = {
-                        selectedGroup: data.selectedGroup || '',
-                        personaGroups: data.personaGroups || {},
-                        showTags: data.showTags || false
-                    };
-                }
-            }
-        } catch (e) {
-            warn('Failed to restore from localStorage:', e);
-        }
-
-        if (Object.keys(extensionSettings.personaGroups || {}).length > 0) {
-            log('Using settings from extension_settings');
-            settings = { ...settings, ...extensionSettings };
-        } else if (Object.keys(localStorageSettings.personaGroups || {}).length > 0) {
-            log('Using settings from localStorage backup');
-            settings = { ...settings, ...localStorageSettings };
-        } else {
-            log('No existing settings found, using defaults');
-        }
-
-        await saveSettings();
+        settings = getSettings();
+        log('Settings loaded from SillyTavern context');
     }
 
     async function saveSettings() {
-        if (!window.extension_settings) return;
+        // Update the extension settings directly
+        Object.assign(extensionSettings[EXT_NAME], settings);
 
-        extension_settings[EXT_NAME] = { ...settings };
-        try {
-            if (typeof saveSettingsDebounced === 'function') {
-                saveSettingsDebounced();
-            }
-        } catch (e) {
-            warn('ST save failed:', e);
-        }
+        // Use SillyTavern's save function
+        saveSettingsDebounced();
 
-        try {
-            localStorage.setItem(`${EXT_NAME}-backup`, JSON.stringify({
-                version: VERSION,
-                timestamp: Date.now(),
-                ...settings
-            }));
-        } catch (e) {
-            warn('Backup save failed:', e);
-        }
-
-        log('Settings saved to storages');
+        log('Settings saved via SillyTavern');
     }
 
     async function exportGroups() {
@@ -334,7 +309,8 @@
             updateFilterOptions();
             return true;
         }
-	const header = getHeaderRow();
+
+        const header = getHeaderRow();
         if (!header) {
             log('Header not found for filter UI');
             return false;
@@ -733,6 +709,7 @@
     function updateFilterOptions() {
         const select = document.getElementById(IDS.filterSelect);
         if (!select) return;
+
         const currentValue = select.value;
         const groups = getAllGroups();
         const currentWidth = select.offsetWidth;
@@ -798,6 +775,7 @@
     function getHeaderRow() {
         let header = document.querySelector(SELECTORS.headerRow);
         if (header) return header;
+
         for (const selector of SELECTORS.altHeaderSelectors) {
             try {
                 const element = document.querySelector(selector);
@@ -809,8 +787,10 @@
                     }
                 }
             } catch (e) {
+                // Ignore selector errors
             }
         }
+
         const leftColumn = document.querySelector('.persona_management_left_column');
         if (leftColumn) {
             header = leftColumn.querySelector('.flex-container');
@@ -863,6 +843,7 @@
         console.warn(`[${EXT_NAME}]`, ...args);
     }
 
+    // Debug functions
     window.pgmSync = async function() {
         await saveSettings();
         const info = {
@@ -881,7 +862,6 @@
         if (confirm('Delete ALL persona groups data?')) {
             settings.personaGroups = {};
             settings.selectedGroup = '';
-            localStorage.removeItem(`${EXT_NAME}-backup`);
             await saveSettings();
             createUI();
             log('All data cleared');
@@ -913,6 +893,7 @@
         input.click();
     };
 
+    // Extension registration
     const registerExtension = window.registerExtension ||
                              (window.SillyTavern && window.SillyTavern.registerExtension);
 
