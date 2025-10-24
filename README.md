@@ -10,7 +10,7 @@ A powerful extension for SillyTavern that allows you to organize your personas w
 - 📱 Mobile Friendly: Responsive design for all devices(I hope so...)
 - 🎨 Theme Integration: Seamlessly integrates with SillyTavern themes
 - 💾 Backup feature and support of SillyTavern persistent settings.
-- Now with folders.
+- Now with folders and QuickPersona support.
 
 ## Installation
 Use ST's inbuilt extension installer.

@@ -2,8 +2,8 @@
     'use strict';
 
     const EXT_NAME = 'personas';
-    const VERSION = '2.2.0';
-    const DEBUG = false;
+    const VERSION = '2.3.0';
+    const DEBUG = true;
 
     const SELECTORS = {
         personaManagement: '#persona-management-block',
@@ -49,6 +49,7 @@
     let lastCardsCount = 0;
     let lastCardsHash = '';
     let checkInterval = null;
+    let quickPersonaIntegration = null;
 
     function getSettings() {
         if (!extensionSettings[EXT_NAME]) {
@@ -69,6 +70,7 @@
         setupEventListeners();
         setTimeout(tryCreateUI, 100);
         setInterval(checkPersonaManager, 2000);
+        initQuickPersonaIntegration();
         log('Extension initialized');
     }
 
@@ -196,73 +198,73 @@
     }
 
     function createTagsToggle(header) {
-    if (document.getElementById(IDS.tagsToggle)) return;
+        if (document.getElementById(IDS.tagsToggle)) return;
 
-    const btn = createElement('button', {
-        id: IDS.tagsToggle,
-        type: 'button',
-        className: 'pgm-tags-toggle menu_button',
-        innerHTML: '<i class="fa-solid fa-tags"></i>',
-        title: 'Toggle group management'
-    });
+        const btn = createElement('button', {
+            id: IDS.tagsToggle,
+            type: 'button',
+            className: 'pgm-tags-toggle menu_button',
+            innerHTML: '<i class="fa-solid fa-tags"></i>',
+            title: 'Toggle group management'
+        });
 
-    btn.addEventListener('click', () => {
-        settings.showTags = !settings.showTags;
-        saveSettings();
-        updateTagsButton();
-        resetProcessedFlags();
+        btn.addEventListener('click', () => {
+            settings.showTags = !settings.showTags;
+            saveSettings();
+            updateTagsButton();
+            resetProcessedFlags();
 
-        if (settings.showFolders) {
-            updateFolderCards();
-            updatePersonaCards();
-        } else {
-            updatePersonaCards();
-        }
-    });
-
-    header.appendChild(btn);
-    updateTagsButton();
-}
-
-function updateFolderCards() {
-    const folderCards = document.querySelectorAll(`.${CLASSES.folderCard}`);
-
-    folderCards.forEach(folderCard => {
-        const groupName = folderCard.dataset.groupName;
-        if (!groupName) return;
-
-        const nameBlock = folderCard.querySelector(SELECTORS.nameBlock);
-        if (!nameBlock) return;
-
-        const existingBtns = nameBlock.querySelectorAll('.pgm-folder-manage');
-        existingBtns.forEach(btn => btn.remove());
-
-        if (settings.showTags) {
-            const groupBtn = createElement('button', {
-                type: 'button',
-                className: `${CLASSES.groupBtn} pgm-folder-manage menu_button`,
-                innerHTML: '<i class="fa-solid fa-cog"></i>',
-                title: 'Manage folder'
-            });
-
-            groupBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                openFolderManager(groupBtn, groupName);
-            });
-
-            groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
-            groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
-
-            const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
-            if (nameSpan) {
-                nameSpan.insertAdjacentElement('afterend', groupBtn);
+            if (settings.showFolders) {
+                updateFolderCards();
+                updatePersonaCards();
             } else {
-                nameBlock.appendChild(groupBtn);
+                updatePersonaCards();
             }
-        }
-    });
-}
+        });
+
+        header.appendChild(btn);
+        updateTagsButton();
+    }
+
+    function updateFolderCards() {
+        const folderCards = document.querySelectorAll(`.${CLASSES.folderCard}`);
+
+        folderCards.forEach(folderCard => {
+            const groupName = folderCard.dataset.groupName;
+            if (!groupName) return;
+
+            const nameBlock = folderCard.querySelector(SELECTORS.nameBlock);
+            if (!nameBlock) return;
+
+            const existingBtns = nameBlock.querySelectorAll('.pgm-folder-manage');
+            existingBtns.forEach(btn => btn.remove());
+
+            if (settings.showTags) {
+                const groupBtn = createElement('button', {
+                    type: 'button',
+                    className: `${CLASSES.groupBtn} pgm-folder-manage menu_button`,
+                    innerHTML: '<i class="fa-solid fa-cog"></i>',
+                    title: 'Manage folder'
+                });
+
+                groupBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    openFolderManager(groupBtn, groupName);
+                });
+
+                groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+                groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
+
+                const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
+                if (nameSpan) {
+                    nameSpan.insertAdjacentElement('afterend', groupBtn);
+                } else {
+                    nameBlock.appendChild(groupBtn);
+                }
+            }
+        });
+    }
 
     function createFolderToggle(header) {
         if (document.getElementById(IDS.folderToggle)) return;
@@ -340,6 +342,9 @@ function updateFolderCards() {
         cards.forEach(card => {
             const avatarId = card.dataset.avatarId;
             if (avatarId && !card.classList.contains(CLASSES.folderCard) && !originalPersonaCards.has(avatarId)) {
+                const img = card.querySelector('img');
+                log('Storing card:', avatarId, 'with image:', !!img, img ? img.src : 'no image');
+
                 originalPersonaCards.set(avatarId, {
                     element: card.cloneNode(true),
                     visible: card.style.display !== 'none'
@@ -397,6 +402,7 @@ function updateFolderCards() {
 
         const groups = getAllGroups();
         const usedPersonas = new Set();
+        const folderCards = [];
 
         log('Creating folders for groups:', groups.map(g => g.name));
 
@@ -412,22 +418,45 @@ function updateFolderCards() {
             }
 
             const folderCard = createFolderCard(name, count, originalCard.element, personasInGroup);
-            avatarBlock.appendChild(folderCard);
+            folderCards.push({ card: folderCard, name: name });
 
             personasInGroup.forEach(id => usedPersonas.add(id));
             log('Created folder:', name, 'with personas:', personasInGroup);
         });
 
-        originalPersonaCards.forEach((data, avatarId) => {
-            const currentCard = avatarBlock.querySelector(`[data-avatar-id="${avatarId}"]:not(.${CLASSES.folderCard})`);
-            if (currentCard) {
-                currentCard.style.display = usedPersonas.has(avatarId) ? 'none' : '';
-                currentCard.classList.remove(CLASSES.hidden);
+        folderCards.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+
+        const firstChild = avatarBlock.firstChild;
+        folderCards.forEach(({ card }) => {
+            if (firstChild) {
+                avatarBlock.insertBefore(card, firstChild);
+            } else {
+                avatarBlock.appendChild(card);
+            }
+        });
+
+        const allCards = avatarBlock.querySelectorAll(SELECTORS.avatarCard);
+        allCards.forEach(card => {
+            if (card.classList.contains(CLASSES.folderCard)) {
+                return;
+            }
+
+            const avatarId = card.dataset.avatarId;
+            if (!avatarId) return;
+
+            if (usedPersonas.has(avatarId)) {
+                card.style.display = 'none';
+                card.classList.add(CLASSES.hidden);
+            } else {
+                card.style.display = '';
+                card.style.visibility = 'visible';
+                card.style.opacity = '1';
+                card.classList.remove(CLASSES.hidden);
             }
         });
 
         updatePersonaCards();
-        log('Folder view created with', groups.length, 'folders');
+        log('Folder view created with', groups.length, 'folders (sorted alphabetically)');
     }
 
     function showFolderContent(folderName) {
@@ -461,15 +490,23 @@ function updateFolderCards() {
 
         avatarBlock.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
 
-        originalPersonaCards.forEach((data, avatarId) => {
-            const currentCard = avatarBlock.querySelector(`[data-avatar-id="${avatarId}"]`);
-            if (currentCard) {
-                currentCard.style.display = '';
-                currentCard.classList.remove(CLASSES.hidden);
+        const allCards = avatarBlock.querySelectorAll(SELECTORS.avatarCard);
+        allCards.forEach(card => {
+            if (card.classList.contains(CLASSES.folderCard)) {
+                return;
+            }
+
+            const avatarId = card.dataset.avatarId;
+            if (avatarId && originalPersonaCards.has(avatarId)) {
+                card.style.display = '';
+                card.style.visibility = 'visible';
+                card.style.opacity = '1';
+                card.classList.remove(CLASSES.hidden);
             }
         });
 
         updatePersonaCards();
+
         if (settings.selectedGroup) {
             applyFilter();
         }
@@ -478,7 +515,17 @@ function updateFolderCards() {
     }
 
     function createFolderCard(groupName, count, templateCard, personasInGroup) {
-        const folderCard = templateCard.cloneNode(true);
+        log('Creating folder card for group:', groupName);
+
+        const randomPersonaId = personasInGroup[Math.floor(Math.random() * personasInGroup.length)];
+        const randomPersonaCard = originalPersonaCards.get(randomPersonaId);
+
+        const sourceCard = randomPersonaCard ? randomPersonaCard.element : templateCard;
+
+        log('Using random persona for folder image:', randomPersonaId);
+
+        const folderCard = sourceCard.cloneNode(true);
+
         folderCard.classList.add(CLASSES.folderCard);
         folderCard.classList.add(CLASSES.processed);
         folderCard.dataset.groupName = groupName;
@@ -489,11 +536,23 @@ function updateFolderCards() {
             nameSpan.textContent = `${groupName} (${count})`;
         }
 
-        folderCard.querySelectorAll(`.${CLASSES.groupBtn}`).forEach(btn => btn.remove());
+        const img = folderCard.querySelector('img');
+        if (img) {
+            img.alt = `Folder: ${groupName}`;
+            img.style.display = 'block';
+            img.style.visibility = 'visible';
+            img.style.opacity = '1';
+            img.removeAttribute('loading');
+            log('Image configured for folder:', img.src);
+        }
+
+        folderCard.querySelectorAll(`.${CLASSES.groupBtn}:not(.pgm-folder-manage)`).forEach(btn => btn.remove());
 
         if (settings.showTags) {
             const nameBlock = folderCard.querySelector(SELECTORS.nameBlock);
             if (nameBlock) {
+                folderCard.querySelectorAll('.pgm-folder-manage').forEach(btn => btn.remove());
+
                 const groupBtn = createElement('button', {
                     type: 'button',
                     className: `${CLASSES.groupBtn} pgm-folder-manage menu_button`,
@@ -510,14 +569,13 @@ function updateFolderCards() {
                 groupBtn.addEventListener('mousedown', (e) => e.stopPropagation());
                 groupBtn.addEventListener('mouseup', (e) => e.stopPropagation());
 
-                const nameSpan = nameBlock.querySelector(SELECTORS.nameSpan);
-                if (nameSpan) {
-                    nameSpan.insertAdjacentElement('afterend', groupBtn);
-                } else {
-                    nameBlock.appendChild(groupBtn);
-                }
+                nameBlock.appendChild(groupBtn);
             }
         }
+
+        folderCard.style.display = '';
+        folderCard.style.visibility = 'visible';
+        folderCard.style.opacity = '1';
 
         folderCard.addEventListener('click', (e) => {
             if (e.target.closest('.pgm-folder-manage')) {
@@ -538,162 +596,163 @@ function updateFolderCards() {
             e.preventDefault();
         });
 
+        log('Folder card created successfully for:', groupName);
         return folderCard;
     }
 
     function openFolderManager(anchor, groupName) {
-    log('Opening folder manager for:', groupName);
-    closePopup();
+        log('Opening folder manager for:', groupName);
+        closePopup();
 
-    const backdrop = createElement('div', {
-        id: IDS.backdrop,
-        className: 'pgm-backdrop'
-    });
+        const backdrop = createElement('div', {
+            id: IDS.backdrop,
+            className: 'pgm-backdrop'
+        });
 
-    const popup = createElement('div', {
-        id: IDS.popover,
-        className: 'pgm-popover'
-    });
+        const popup = createElement('div', {
+            id: IDS.popover,
+            className: 'pgm-popover'
+        });
 
-    const title = createElement('div', {
-        className: 'pgm-popover-title',
-        textContent: `Manage Folder: ${groupName}`
-    });
+        const title = createElement('div', {
+            className: 'pgm-popover-title',
+            textContent: `Manage Folder: ${groupName}`
+        });
 
-    const personasList = createElement('div', {
-        className: 'pgm-groups-list'
-    });
+        const personasList = createElement('div', {
+            className: 'pgm-groups-list'
+        });
 
-    const deleteBtn = createElement('button', {
-        type: 'button',
-        textContent: 'Delete Folder',
-        className: 'menu_button pgm-delete-folder-btn'
-    });
+        const deleteBtn = createElement('button', {
+            type: 'button',
+            textContent: 'Delete Folder',
+            className: 'menu_button pgm-delete-folder-btn'
+        });
 
-    const closeBtn = createElement('button', {
-        type: 'button',
-        textContent: 'Done',
-        className: 'pgm-close-btn menu_button'
-    });
+        const closeBtn = createElement('button', {
+            type: 'button',
+            textContent: 'Done',
+            className: 'pgm-close-btn menu_button'
+        });
 
-    const buttonRow = createElement('div', {
-        className: 'pgm-button-row'
-    });
+        const buttonRow = createElement('div', {
+            className: 'pgm-button-row'
+        });
 
-    function renderPersonas() {
-        const personasInGroup = getPersonasInGroup(groupName);
-        personasList.innerHTML = '';
+        function renderPersonas() {
+            const personasInGroup = getPersonasInGroup(groupName);
+            personasList.innerHTML = '';
 
-        if (personasInGroup.length === 0) {
-            personasList.innerHTML = '<div class="pgm-empty">No personas in this folder</div>';
-            return;
-        }
+            if (personasInGroup.length === 0) {
+                personasList.innerHTML = '<div class="pgm-empty">No personas in this folder</div>';
+                return;
+            }
 
-        personasInGroup.forEach(avatarId => {
-            const originalCard = originalPersonaCards.get(avatarId);
-            if (!originalCard) return;
+            personasInGroup.forEach(avatarId => {
+                const originalCard = originalPersonaCards.get(avatarId);
+                if (!originalCard) return;
 
-            const nameSpan = originalCard.element.querySelector(SELECTORS.nameSpan);
-            const personaName = nameSpan ? nameSpan.textContent : avatarId;
+                const nameSpan = originalCard.element.querySelector(SELECTORS.nameSpan);
+                const personaName = nameSpan ? nameSpan.textContent : avatarId;
 
-            const row = createElement('div', {
-                className: 'pgm-group-row pgm-persona-row'
-            });
+                const row = createElement('div', {
+                    className: 'pgm-group-row pgm-persona-row'
+                });
 
-            const nameSpanEl = createElement('span', {
-                textContent: personaName,
-                className: 'pgm-group-name'
-            });
+                const nameSpanEl = createElement('span', {
+                    textContent: personaName,
+                    className: 'pgm-group-name'
+                });
 
-            const removeBtn = createElement('button', {
-                type: 'button',
-                textContent: 'Remove',
-                className: 'menu_button pgm-remove-persona-btn'
-            });
+                const removeBtn = createElement('button', {
+                    type: 'button',
+                    textContent: 'Remove',
+                    className: 'menu_button pgm-remove-persona-btn'
+                });
 
-            removeBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                removePersonaFromGroup(avatarId, groupName);
-                renderPersonas();
+                removeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    removePersonaFromGroup(avatarId, groupName);
+                    renderPersonas();
 
-                const remainingPersonas = getPersonasInGroup(groupName);
-                if (remainingPersonas.length === 0) {
-                    closePopup();
-                    currentFolderView = null;
-                    updateView();
-                } else {
-                    if (currentFolderView === groupName) {
-                        const folderHeader = document.getElementById(IDS.folderHeader);
-                        if (folderHeader) {
-                            const title = folderHeader.querySelector('.pgm-folder-title');
-                            if (title) {
-                                title.textContent = `${groupName} (${remainingPersonas.length})`;
+                    const remainingPersonas = getPersonasInGroup(groupName);
+                    if (remainingPersonas.length === 0) {
+                        closePopup();
+                        currentFolderView = null;
+                        updateView();
+                    } else {
+                        if (currentFolderView === groupName) {
+                            const folderHeader = document.getElementById(IDS.folderHeader);
+                            if (folderHeader) {
+                                const title = folderHeader.querySelector('.pgm-folder-title');
+                                if (title) {
+                                    title.textContent = `${groupName} (${remainingPersonas.length})`;
+                                }
                             }
                         }
+                        resetProcessedFlags();
+                        updateView();
                     }
-                    resetProcessedFlags();
-                    updateView();
-                }
-            });
+                });
 
-            row.append(nameSpanEl, removeBtn);
-            personasList.appendChild(row);
+                row.append(nameSpanEl, removeBtn);
+                personasList.appendChild(row);
+            });
+        }
+
+        deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (confirm(`Delete folder "${groupName}"? All personas will be ungrouped.`)) {
+                const personasInGroup = getPersonasInGroup(groupName);
+                personasInGroup.forEach(avatarId => {
+                    removePersonaFromGroup(avatarId, groupName);
+                });
+                closePopup();
+                currentFolderView = null;
+                updateView();
+            }
         });
-    }
 
-    deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (confirm(`Delete folder "${groupName}"? All personas will be ungrouped.`)) {
-            const personasInGroup = getPersonasInGroup(groupName);
-            personasInGroup.forEach(avatarId => {
-                removePersonaFromGroup(avatarId, groupName);
-            });
-            closePopup();
-            currentFolderView = null;
-            updateView();
-        }
-    });
-
-    closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        closePopup();
-    });
-
-    backdrop.addEventListener('click', (e) => {
-        if (e.target === backdrop) {
-            closePopup();
-        }
-    });
-
-    function handleKeydown(e) {
-        if (e.key === 'Escape') {
-            e.preventDefault();
+        closeBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             closePopup();
+        });
+
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) {
+                closePopup();
+            }
+        });
+
+        function handleKeydown(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                closePopup();
+            }
         }
+
+        document.addEventListener('keydown', handleKeydown);
+
+        const preventBubbling = (e) => {
+            e.stopPropagation();
+        };
+
+        popup.addEventListener('click', preventBubbling);
+        popup.addEventListener('mousedown', preventBubbling);
+        popup.addEventListener('mouseup', preventBubbling);
+
+        buttonRow.append(deleteBtn, closeBtn);
+        popup.append(title, personasList, buttonRow);
+        document.body.append(backdrop, popup);
+
+        positionPopup(popup, anchor);
+        renderPersonas();
+
+        popup._cleanup = () => {
+            document.removeEventListener('keydown', handleKeydown);
+        };
     }
-
-    document.addEventListener('keydown', handleKeydown);
-
-    const preventBubbling = (e) => {
-        e.stopPropagation();
-    };
-
-    popup.addEventListener('click', preventBubbling);
-    popup.addEventListener('mousedown', preventBubbling);
-    popup.addEventListener('mouseup', preventBubbling);
-
-    buttonRow.append(deleteBtn, closeBtn);
-    popup.append(title, personasList, buttonRow);
-    document.body.append(backdrop, popup);
-
-    positionPopup(popup, anchor);
-    renderPersonas();
-
-    popup._cleanup = () => {
-        document.removeEventListener('keydown', handleKeydown);
-    };
-}
 
     function positionPopup(popup, anchor) {
         requestAnimationFrame(() => {
@@ -1029,16 +1088,20 @@ function updateFolderCards() {
     function updateFilterState() {
         const wrapper = document.getElementById(IDS.filterWrapper);
         if (wrapper) {
-            wrapper.style.opacity = (settings.showFolders && !currentFolderView) ? '0.5' : '';
+            const shouldDisable = (settings.showFolders && !currentFolderView) || (currentFolderView !== null);
+
+            wrapper.style.opacity = shouldDisable ? '0.5' : '';
             const select = document.getElementById(IDS.filterSelect);
             if (select) {
-                select.disabled = (settings.showFolders && !currentFolderView);
+                select.disabled = shouldDisable;
             }
         }
     }
 
     function applyFilter() {
-        if (settings.showFolders && !currentFolderView) return;
+        if ((settings.showFolders && !currentFolderView) || (currentFolderView !== null)) {
+            return;
+        }
 
         const cards = getAvatarCards();
         const selectedGroup = settings.selectedGroup;
@@ -1077,91 +1140,519 @@ function updateFolderCards() {
         return element;
     }
 
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    }
-
     function log(...args) {
         if (DEBUG) console.log(`[${EXT_NAME}]`, ...args);
     }
-
-    function unload() {
-        stopCardsMonitoring();
-        closePopup();
-        document.querySelectorAll(`.${CLASSES.folderCard}`).forEach(el => el.remove());
-        document.getElementById(IDS.filterWrapper)?.remove();
-        document.getElementById(IDS.tagsToggle)?.remove();
-        document.getElementById(IDS.folderToggle)?.remove();
-        document.getElementById(IDS.folderHeader)?.remove();
-        resetProcessedFlags();
-        log('Extension unloaded');
-    }
-
-    const registerExtension = window.registerExtension ||
-                             (window.SillyTavern && window.SillyTavern.registerExtension);
-
-    if (typeof registerExtension === 'function') {
-        registerExtension({
-            name: EXT_NAME,
-            init: init,
-            unload: unload
-        });
-        log('Extension registered via registerExtension');
-    } else {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', init);
-        } else {
-            setTimeout(init, 100);
+	
+    class QuickPersonaIntegration {
+        constructor() {
+            this.isQuickPersonaAvailable = false;
+            this.isIntegrated = false;
+            this.init();
         }
-        window.addEventListener('beforeunload', unload);
-        log('Extension registered via fallback method');
+
+        init() {
+            eventSource.on(event_types.SETTINGS_UPDATED, () => {
+                setTimeout(() => this.checkAndIntegrate(), 100);
+            });
+
+            setTimeout(() => this.checkAndIntegrate(), 500);
+            setInterval(() => this.checkAndIntegrate(), 2000);
+        }
+
+        checkAndIntegrate() {
+            const quickPersonaButton = document.getElementById('quickPersona');
+            const wasAvailable = this.isQuickPersonaAvailable;
+            this.isQuickPersonaAvailable = !!(quickPersonaButton &&
+                quickPersonaButton.offsetParent !== null &&
+                quickPersonaButton.parentNode !== null);
+
+            if (this.isQuickPersonaAvailable && !wasAvailable) {
+                log('QuickPersona detected, integrating...');
+                this.integrate();
+            } else if (!this.isQuickPersonaAvailable && wasAvailable) {
+                log('QuickPersona no longer available, removing integration');
+                this.removeIntegration();
+            }
+        }
+
+        integrate() {
+            if (this.isIntegrated) return;
+
+            try {
+                this.interceptQuickPersonaClick();
+                this.setupClickOutsideHandler();
+                this.isIntegrated = true;
+                log('QuickPersona integration completed');
+            } catch (error) {
+                log('Error during QuickPersona integration:', error);
+                this.isIntegrated = false;
+            }
+        }
+
+        removeIntegration() {
+            this.isIntegrated = false;
+            $(document.body).off('.quickPersonaIntegration');
+            log('QuickPersona integration removed');
+        }
+
+        interceptQuickPersonaClick() {
+            const quickPersonaButton = document.getElementById('quickPersona');
+            if (!quickPersonaButton) return;
+
+            const newButton = quickPersonaButton.cloneNode(true);
+            quickPersonaButton.parentNode.replaceChild(newButton, quickPersonaButton);
+
+            newButton.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openEnhancedQuickPersonaSelector();
+            });
+        }
+
+        async openEnhancedQuickPersonaSelector() {
+            if (!this.isQuickPersonaAvailable) {
+                log('QuickPersona not available, cannot open selector');
+                return;
+            }
+
+            if (document.getElementById('quickPersonaMenu')) {
+                this.closeQuickPersonaSelector();
+                return;
+            }
+
+            try {
+                const userAvatars = await this.getUserAvatarsList();
+                const quickPersonaList = $('<div id="quickPersonaMenu"><ul class="list-group"></ul></div>');
+
+                const filteredAvatars = this.filterAndGroupAvatars(userAvatars);
+
+                for (const item of filteredAvatars) {
+                    if (item.type === 'folder') {
+                        this.createFolderItem(quickPersonaList, item);
+                    } else {
+                        this.createPersonaItem(quickPersonaList, item.avatar);
+                    }
+                }
+
+                this.showQuickPersonaMenu(quickPersonaList);
+            } catch (error) {
+                log('Error opening enhanced QuickPersona selector:', error);
+            }
+        }
+
+        async getUserAvatarsList() {
+            if (window.getUserAvatars) {
+                return await window.getUserAvatars(false);
+            }
+
+            const avatarCards = getAvatarCards();
+            return avatarCards
+                .map(card => card.dataset.avatarId)
+                .filter(id => id && !id.startsWith('folder-'));
+        }
+
+        filterAndGroupAvatars(userAvatars) {
+            const result = [];
+
+            if (settings.showFolders) {
+                const groups = getAllGroups();
+                const usedPersonas = new Set();
+
+                groups.forEach(({ name, count }) => {
+                    const personasInGroup = getPersonasInGroup(name);
+                    if (personasInGroup.length === 0) return;
+
+                    const availablePersonas = personasInGroup.filter(id => userAvatars.includes(id));
+                    if (availablePersonas.length === 0) return;
+
+                    result.push({
+                        type: 'folder',
+                        name: name,
+                        personas: availablePersonas,
+                        count: availablePersonas.length
+                    });
+
+                    availablePersonas.forEach(id => usedPersonas.add(id));
+                });
+
+                userAvatars.forEach(avatar => {
+                    if (!usedPersonas.has(avatar)) {
+                        result.push({ type: 'persona', avatar });
+                    }
+                });
+            } else {
+                const selectedGroup = settings.selectedGroup;
+
+                userAvatars.forEach(avatar => {
+                    if (!selectedGroup) {
+                        result.push({ type: 'persona', avatar });
+                    } else {
+                        const personaGroups = settings.personaGroups[avatar] || [];
+                        if (personaGroups.includes(selectedGroup)) {
+                            result.push({ type: 'persona', avatar });
+                        }
+                    }
+                });
+            }
+
+            return result;
+        }
+
+        createFolderItem(quickPersonaList, folderData) {
+            const randomPersona = folderData.personas[Math.floor(Math.random() * folderData.personas.length)];
+            const imgUrl = this.getImageUrlSafe(randomPersona);
+
+            const listItem = $(`
+                <li tabindex="0" class="list-group-item interactable pgm-quick-folder" data-folder="${folderData.name}">
+                    <img class="quickPersonaMenuImg pgm-folder-avatar" src="${imgUrl}" title="${folderData.name} (${folderData.count})" />
+                    <div class="pgm-folder-indicator">📁</div>
+                </li>
+            `);
+
+            listItem.on('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.openFolderSubmenu(folderData, listItem);
+            });
+
+            quickPersonaList.find('ul').append(listItem);
+        }
+
+        createPersonaItem(quickPersonaList, userAvatar) {
+            const powerUser = window.power_user || {};
+            const currentUserAvatar = window.user_avatar;
+
+            const personaName = powerUser.personas?.[userAvatar] || userAvatar;
+            const personaTitle = powerUser.persona_descriptions?.[userAvatar]?.title || '';
+            const imgUrl = this.getImageUrlSafe(userAvatar);
+            const imgTitle = personaTitle ? `${personaName} - ${personaTitle}` : personaName;
+            const isSelected = userAvatar === currentUserAvatar;
+            const isDefault = userAvatar === powerUser.default_persona;
+
+            const listItem = $('<li tabindex="0" class="list-group-item interactable"><img class="quickPersonaMenuImg"/></li>');
+            listItem.find('img')
+                .attr('src', imgUrl)
+                .attr('title', imgTitle)
+                .toggleClass('selected', isSelected)
+                .toggleClass('default', isDefault);
+
+            listItem.on('click', async () => {
+                this.closeQuickPersonaSelector();
+                this.updateQuickPersonaButton(userAvatar);
+                await this.setUserAvatarSafe(userAvatar);
+            });
+
+            quickPersonaList.find('ul').append(listItem);
+        }
+
+        openFolderSubmenu(folderData, folderItem) {
+            const menu = document.getElementById('quickPersonaMenu');
+            const ul = menu.querySelector('ul');
+            ul.innerHTML = '';
+
+            const backItem = $(`
+                <li tabindex="0" class="list-group-item interactable pgm-back-item">
+                    <div class="pgm-back-icon">←</div>
+                    <div class="pgm-back-text">Back</div>
+                </li>
+            `);
+
+            backItem.on('click', () => {
+                this.closeQuickPersonaSelector();
+                setTimeout(() => this.openEnhancedQuickPersonaSelector(), 50);
+            });
+
+            ul.appendChild(backItem[0]);
+
+            folderData.personas.forEach(userAvatar => {
+                this.createPersonaItem($('#quickPersonaMenu'), userAvatar);
+            });
+        }
+
+        async setUserAvatarSafe(avatarId) {
+            try {
+                if (window.setUserAvatar) {
+                    await window.setUserAvatar(avatarId);
+                } else {
+                    const avatarCard = document.querySelector(`[data-avatar-id="${avatarId}"]`);
+                    if (avatarCard) {
+                        avatarCard.click();
+                    }
+                }
+
+                this.updateQuickPersonaButton(avatarId);
+                setTimeout(() => {
+                    this.changeQuickPersona();
+                }, 100);
+
+            } catch (error) {
+                log('Error setting user avatar:', error);
+            }
+        }
+
+        changeQuickPersona() {
+            if (!this.isQuickPersonaAvailable) {
+                log('QuickPersona not available, skipping change');
+                return;
+            }
+
+            const powerUser = window.power_user || {};
+            const userAvatar = window.user_avatar;
+
+            if (!userAvatar) {
+                log('No user avatar set, skipping update');
+                return;
+            }
+
+            this.updateQuickPersonaButton(userAvatar);
+            setTimeout(() => {
+                const quickPersonaImg = $('#quickPersonaImg');
+                if (quickPersonaImg.length === 0) {
+                    log('QuickPersona image element not found in DOM');
+                    return;
+                }
+
+                const personaName = powerUser.personas?.[userAvatar] || userAvatar;
+                const personaTitle = powerUser.persona_descriptions?.[userAvatar]?.title || '';
+                const imgUrl = this.getImageUrlSafe(userAvatar);
+                const imgTitle = personaTitle ? `${personaName} - ${personaTitle}` : personaName;
+
+                quickPersonaImg.attr('src', imgUrl).attr('title', imgTitle);
+                log('QuickPersona button updated with delay');
+            }, 50);
+        }
+
+        updateQuickPersonaButton(avatarId) {
+            if (!this.isQuickPersonaAvailable) {
+                log('QuickPersona not available, skipping button update');
+                return;
+            }
+
+            try {
+                const quickPersonaImg = document.getElementById('quickPersonaImg');
+                if (!quickPersonaImg) {
+                    log('QuickPersona image element not found');
+                    return;
+                }
+
+                const powerUser = window.power_user || {};
+                const personaName = powerUser.personas?.[avatarId] || avatarId;
+                const personaTitle = powerUser.persona_descriptions?.[avatarId]?.title || '';
+                const imgUrl = this.getImageUrlSafe(avatarId);
+                const imgTitle = personaTitle ? `${personaName} - ${personaTitle}` : personaName;
+
+                quickPersonaImg.src = imgUrl;
+                quickPersonaImg.title = imgTitle;
+                quickPersonaImg.alt = imgTitle;
+
+                log('QuickPersona button updated immediately:', {
+                    avatarId,
+                    imgUrl,
+                    title: imgTitle
+                });
+            } catch (error) {
+                log('Error updating QuickPersona button:', error);
+            }
+        }
+
+        getImageUrlSafe(userAvatar) {
+            try {
+                if (window.getThumbnailUrl) {
+                    try {
+                        const testUrl = window.getThumbnailUrl('persona', 'test.png', true);
+                        const supportsPersonaThumbnails = testUrl.includes('&t=');
+
+                        if (supportsPersonaThumbnails) {
+                            return window.getThumbnailUrl('persona', userAvatar, true);
+                        }
+                    } catch (e) {
+                        log('getThumbnailUrl failed:', e);
+                    }
+                }
+
+                if (window.getUserAvatar) {
+                    try {
+                        const avatarUrl = window.getUserAvatar(userAvatar);
+                        return `${avatarUrl}?t=${Date.now()}`;
+                    } catch (e) {
+                        log('getUserAvatar failed:', e);
+                    }
+                }
+
+                const existingCard = originalPersonaCards.get(userAvatar);
+                if (existingCard) {
+                    const img = existingCard.element.querySelector('img');
+                    if (img && img.src && !img.src.includes('ai4.png')) {
+                        return img.src;
+                    }
+                }
+				
+                const currentCard = document.querySelector(`[data-avatar-id="${userAvatar}"]`);
+                if (currentCard) {
+                    const img = currentCard.querySelector('img');
+                    if (img && img.src && !img.src.includes('ai4.png')) {
+                        return img.src;
+                    }
+                }
+
+                const possiblePaths = [
+                    `/user/avatars/${userAvatar}`,
+                    `/characters/${userAvatar}/avatar.png`,
+                    `/characters/${userAvatar}/avatar.jpg`,
+                    `/img/avatars/${userAvatar}`,
+                    `/avatars/${userAvatar}`
+                ];
+                return `${possiblePaths[0]}?t=${Date.now()}`;
+
+            } catch (error) {
+                log('Error getting image URL:', error);
+                return '/img/ai4.png';
+            }
+        }
+
+        preloadImage(userAvatar) {
+            const imgUrl = this.getImageUrlSafe(userAvatar);
+            const img = new Image();
+            img.onload = () => {
+                log('Image preloaded:', imgUrl);
+            };
+            img.onerror = () => {
+                log('Failed to preload image:', imgUrl);
+            };
+            img.src = imgUrl;
+            return imgUrl;
+        }
+
+        setupClickOutsideHandler() {
+            $(document.body).off('.quickPersonaIntegration');
+            if (this.isQuickPersonaAvailable) {
+                $(document.body).on('click.quickPersonaIntegration', (e) => {
+                    const menuExists = document.getElementById('quickPersonaMenu');
+                    const quickPersonaExists = document.getElementById('quickPersona');
+
+                    if (menuExists && quickPersonaExists &&
+                        !e.target.closest('#quickPersonaMenu') &&
+                        !e.target.closest('#quickPersona')) {
+                        this.closeQuickPersonaSelector();
+                    }
+                });
+            }
+        }
+
+        closeQuickPersonaSelector() {
+            const caretElement = $('#quickPersonaCaret');
+            const menuElement = $('#quickPersonaMenu');
+
+            if (caretElement.length === 0 && menuElement.length === 0) {
+                log('QuickPersona elements not found, nothing to close');
+                return;
+            }
+
+            const animationDuration = window.animation_duration || 200;
+
+            if (caretElement.length > 0) {
+                caretElement.toggleClass('fa-caret-up fa-caret-down');
+            }
+
+            if (menuElement.length > 0) {
+                menuElement.fadeOut(animationDuration, () => {
+                    menuElement.remove();
+                });
+            }
+
+            if (window.quickPersonaPopper) {
+                window.quickPersonaPopper.destroy();
+                window.quickPersonaPopper = null;
+            }
+        }
+
+        showQuickPersonaMenu(quickPersonaList) {
+            if (!this.isQuickPersonaAvailable) {
+                log('QuickPersona not available, cannot show menu');
+                return;
+            }
+
+            const caretElement = $('#quickPersonaCaret');
+            if (caretElement.length === 0) {
+                log('QuickPersona caret not found, cannot show menu');
+                return;
+            }
+
+            const animationDuration = window.animation_duration || 200;
+
+            quickPersonaList.hide();
+            $(document.body).append(quickPersonaList);
+            caretElement.toggleClass('fa-caret-up fa-caret-down');
+            $('#quickPersonaMenu').fadeIn(animationDuration);
+
+            if (window.Popper?.createPopper) {
+                const quickPersonaButton = document.getElementById('quickPersona');
+                const quickPersonaMenu = document.getElementById('quickPersonaMenu');
+
+                if (quickPersonaButton && quickPersonaMenu) {
+                    if (window.quickPersonaPopper) {
+                        window.quickPersonaPopper.destroy();
+                    }
+                    window.quickPersonaPopper = window.Popper.createPopper(
+                        quickPersonaButton,
+                        quickPersonaMenu,
+                        { placement: 'top-start' }
+                    );
+                    window.quickPersonaPopper.update();
+                }
+            }
+        }
     }
 
-    window.pgmDebug = function() {
+    function initQuickPersonaIntegration() {
+        quickPersonaIntegration = new QuickPersonaIntegration();
+    }
+
+function setupQuickPersonaClickOutside() {
+        $(document.body).on('click', (e) => {
+            if (quickPersonaIntegration &&
+                document.getElementById('quickPersonaMenu') &&
+                !e.target.closest('#quickPersonaMenu') &&
+                !e.target.closest('#quickPersona')) {
+                quickPersonaIntegration.closeQuickPersonaSelector();
+            }
+        });
+    }
+
+    const originalInitQuickPersonaIntegration = initQuickPersonaIntegration;
+    initQuickPersonaIntegration = function() {
+        originalInitQuickPersonaIntegration();
+        setupQuickPersonaClickOutside();
+    };
+
+    window.pgmQuickPersonaDebug = function() {
         return {
-            version: VERSION,
-            settings: settings,
-            isManagerVisible: isPersonaManagerVisible(),
-            originalCards: originalPersonaCards.size,
-            isUICreated: isUICreated,
-            groups: getAllGroups(),
-            currentFolderView: currentFolderView,
-            processedCards: document.querySelectorAll(`.${CLASSES.processed}`).length,
-            lastCardsCount: lastCardsCount,
-            lastCardsHash: lastCardsHash.substring(0, 100) + '...',
-            monitoringActive: !!checkInterval
+            integration: quickPersonaIntegration,
+            isAvailable: quickPersonaIntegration?.isQuickPersonaAvailable,
+            hasOriginalFunction: !!quickPersonaIntegration?.originalOpenFunction
         };
     };
 
-    window.pgmReset = async function() {
-        if (confirm('Delete ALL persona groups data?')) {
-            settings.personaGroups = {};
-            settings.selectedGroup = '';
-            settings.showFolders = false;
-            settings.showTags = false;
-            currentFolderView = null;
-            await saveSettings();
-            resetProcessedFlags();
-            updateView();
-            log('All data cleared');
+    jQuery(async () => {
+        if (typeof SillyTavern === 'undefined') {
+            setTimeout(() => jQuery(init), 1000);
+        } else {
+            await init();
         }
-    };
+    });
 
-    window.pgmForceUpdate = function() {
-        log('Force update triggered');
-        lastCardsCount = -1;
-        lastCardsHash = '';
-        resetProcessedFlags();
-        storeOriginalCards();
-        updateView();
-    };
+    if (DEBUG) {
+        window.PersonaGroupManager = {
+            settings,
+            getAllGroups,
+            getPersonasInGroup,
+            addPersonaToGroup,
+            removePersonaFromGroup,
+            updateView,
+            log,
+            quickPersonaIntegration: () => quickPersonaIntegration
+        };
+    }
 
 })();
