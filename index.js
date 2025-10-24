@@ -3,7 +3,7 @@
 
     const EXT_NAME = 'personas';
     const VERSION = '2.3.0';
-    const DEBUG = true;
+    const DEBUG = false;
 
     const SELECTORS = {
         personaManagement: '#persona-management-block',
